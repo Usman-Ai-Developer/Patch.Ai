@@ -1,6 +1,4 @@
-// frontend/components/Skeleton.js
-
-export function SkeletonText({ className = "" }) {
+﻿export function SkeletonText({ className = "" }) {
   return <div className={`animate-pulse bg-line rounded-sm ${className}`}></div>;
 }
 
