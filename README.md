@@ -1,82 +1,256 @@
-# patch/ — AI code assistant web app
+# 🧩 patch/ – AI-Powered Code Assistant
 
-Upload a project as a `.zip`, describe a change in chat, and Groq edits the files
-directly on disk. Three-pane workspace: file tree, code viewer, chat. Dashboard
-lists past projects so you can pick up where you left off.
+**patch/** is an open-source, full-stack AI code assistant that lets developers describe code changes in natural language and have them applied directly to project files.
 
-## How it works (token-conscious by design)
-1. You upload a `.zip` → Django extracts it into `backend/project_workspaces/<project_id>/`.
-2. You type an instruction in chat.
-3. Backend sends Groq the **file tree only** (paths, no content) + a short list of
-   remembered facts about the project + your instruction — not the whole codebase.
-4. Groq runs a tool-calling loop: it calls `read_file(path)` for whichever specific
-   files it actually needs (and can ask for more mid-conversation, e.g. after seeing
-   an import), then finishes by calling `propose_edits` with **targeted old-text →
-   new-text replacements**, not full file rewrites. `create`/`rewrite` are only used
-   for brand-new files or genuinely sweeping changes.
-5. Backend validates every replacement — the "old" text must match exactly once in
-   the current file, or the edit is rejected with a reason (logged back to you in
-   chat) rather than silently corrupting the file.
-6. Any durable facts Groq flags (stack choices, conventions, prior decisions) get
-   stored in `ProjectFact` and resent on future turns — small and cheap, instead of
-   resending the whole conversation transcript forever.
-7. Projects, chat history, and remembered facts all persist in the database, so
-   closing the tab and coming back later via the dashboard picks up exactly where
-   you left off. Re-uploading a `.zip` to an existing project **merges** — files in
-   the zip overwrite the current version, new files get added, but files missing
-   from the zip are left alone (nothing gets silently deleted).
+It works like a pair programmer that understands your codebase, retrieves only the relevant context, and performs precise file modifications through a conversational interface.
 
-## Run it locally
+![patch/ workspace screenshot](https://via.placeholder.com/1200x600/0A0E14/3B82F6?text=patch%2F+Workspace)
 
-### Backend
+---
+
+## 🚀 Key Features
+
+- **Natural Language Chat** – Tell the assistant what to change (e.g., *“add input validation to the signup form”*) and it proposes targeted edits.
+- **Intelligent File Context** – The AI sees only the file tree upfront, then reads specific files on-demand, minimising token usage and keeping responses fast.
+- **Safe, Targeted Edits** – Uses exact-text replacement (`replace`), file creation (`create`), full rewrites (`rewrite`) or deletion (`delete`) – all verified for uniqueness and safety before touching disk.
+- **Project & File Management** – Upload a `.zip` or individual files, browse the file tree, view code, download any file or the whole project, rename and delete projects – all with a modern, responsive UI.
+- **Version-Aware** – Each chat turn is logged with a changelog of operations, and the assistant remembers facts about your project (e.g., *“uses PostgreSQL, not SQLite”*) for continuity.
+- **Authentication & Ownership** – JWT-secured endpoints with per-user project isolation, ready for multi-tenant use.
+- **Modern Dark Theme** – Gradient backgrounds, brand-blue accents, and a sleek IDE-inspired workspace.
+
+---
+
+## 🧠 How It Works
+
+1. **Upload** your project as a `.zip` (or individual files).
+2. **Chat** – type a change request in the chat panel.
+3. **The AI** receives the file tree and any remembered facts, reads only the files it needs using the `read_file` tool, and proposes a set of operations (`replace`, `create`, `rewrite`, `delete`).
+4. **The Backend** validates each operation (e.g., ensuring a `replace` finds exactly one match) and applies the changes safely.
+5. **You** see the result instantly – the file tree updates, changed files are reflected in the workspace, and the chat shows a summary of what was done.
+
+Projects, chat history, and remembered facts persist between sessions, allowing you to continue working where you left off.
+
+---
+
+## 🛠️ Technology Stack
+
+| Layer | Technology |
+|---------|------------|
+| **Backend** | Django 4.2, Django REST Framework, JWT (SimpleJWT) |
+| **AI** | Groq-hosted LLaMA models via structured tool-calling |
+| **Database** | PostgreSQL (production) / SQLite (development) |
+| **Cache/WebSocket** | Redis (optional) |
+| **Frontend** | Next.js 14, React 18, Tailwind CSS |
+| **Containerisation** | Docker & Docker Compose |
+| **Testing** | pytest (backend), Jest (frontend) |
+| **Deployment** | Render, Oracle Cloud, or any Docker-compatible host |
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- Python 3.11+
+- Node.js 20+
+- Docker & Docker Compose (optional, recommended)
+- PostgreSQL (optional, if not using Docker)
+
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/Usman-Ai-Developer/patch.git
+cd patch
+```
+
+### 2. Environment Variables
+
+Create a `.env` file in the project root:
+
+```env
+SECRET_KEY=your-secret-key
+GROQ_API_KEY=your-groq-api-key
+
+DEBUG=True
+DB_PASSWORD=postgres
+ALLOWED_HOSTS=localhost,127.0.0.1
+CORS_ALLOWED_ORIGINS=http://localhost:3000
+```
+
+For the frontend:
+
+```bash
+cd frontend
+cp .env.local.example .env.local
+```
+
+Set:
+
+```env
+NEXT_PUBLIC_API_URL=http://localhost:8000
+```
+
+### 3. Run with Docker
+
+```bash
+docker compose up --build
+```
+
+This starts:
+
+- PostgreSQL
+- Redis
+- Django Backend
+- Next.js Frontend
+
+Open:
+
+```text
+http://localhost:3000
+```
+
+Stop containers:
+
+```bash
+docker compose down
+```
+
+### 4. Run Locally
+
+#### Backend
+
 ```bash
 cd backend
+
 python -m venv venv
-source venv/bin/activate      # Windows: venv\Scripts\activate
+
+# Linux / macOS
+source venv/bin/activate
+
+# Windows
+venv\Scripts\activate
+
 pip install -r requirements.txt
-cp .env.example .env          # then fill in GROQ_API_KEY
+
 python manage.py migrate
+
 python manage.py runserver
 ```
 
-### Frontend
+#### Frontend
+
 ```bash
 cd frontend
+
 npm install
-cp .env.local.example .env.local
+
 npm run dev
 ```
-Visit `http://localhost:3000`.
 
-## Known limitations (worth knowing before you demo or extend this)
-- **No diff approval step.** Edits apply immediately once `propose_edits` is called —
-  good for speed, risky if Groq misunderstands the instruction. Natural next feature:
-  show the proposed replacements and require a click to apply.
-- **No undo/version history.** Consider wrapping the workspace dir in a git repo on
-  upload and committing after every applied change — gives you free undo via `git revert`.
-- **"replace" ops need genuinely unique old-text.** If a file has repeated boilerplate
-  blocks, Groq may fail a replace and get told to retry with more context — usually
-  self-corrects within the same turn, but watch backend logs if edits keep failing.
-- **No rolling chat summarization yet.** History is capped at the last ~6 raw turns;
-  `ProjectFact` covers durable facts, but very long conversations will still lose
-  fine-grained context beyond that window. Worth adding a periodic summarization pass
-  if sessions get long.
-- **Binary files are uploaded but never sent to the LLM** (by extension allowlist in
-  `settings.py`), so image/asset changes aren't supported yet.
-- **No auth yet, but the seam is there.** `Project.owner` is a nullable FK to the user
-  model already — wiring up login later is a migration + view permission checks, not
-  a redesign. Right now anyone with the URL can open any project.
-- **CORS is wide open** (`CORS_ALLOW_ALL_ORIGINS = True`) — tighten before deploying
-  anywhere public.
-- **`llama-3.3-70b-versatile` doesn't support Groq's prompt caching yet** (only Kimi K2
-  and gpt-oss-20b do, as of this build). Switching models is a one-line env var change
-  if the cost/quality tradeoff is worth it later.
+Open:
 
-## Suggested next features, roughly in order of value
-1. Diff preview + approve/reject before applying
-2. Git-backed undo history per project
-3. Rolling chat summarization once conversations get long
-4. A lightweight file-relevance filter (embeddings or a small trained classifier) ahead
-   of the tool-calling loop, so Groq doesn't even see the full tree for huge projects
-5. Syntax highlighting in the code viewer (currently plain `<pre>`)
-6. Streaming the assistant's response instead of waiting for the full result
+```text
+http://localhost:3000
+```
+
+---
+
+## 🧪 Testing
+
+### Backend
+
+```bash
+cd backend
+
+pytest --cov=assistant --cov-report=term-missing
+```
+
+### Frontend
+
+```bash
+cd frontend
+
+npm test
+```
+
+---
+
+## 📡 API Overview
+
+All endpoints are available under `/api/`.
+
+Authentication is required for most endpoints.
+
+| Endpoint | Method | Description |
+|----------|----------|-------------|
+| `/api/token/` | POST | Login |
+| `/api/token/refresh/` | POST | Refresh token |
+| `/api/signup/` | POST | Register user |
+| `/api/projects/` | GET | List projects |
+| `/api/projects/create/` | POST | Create project |
+| `/api/projects/<uuid>/` | GET/PUT/DELETE | Manage project |
+| `/api/projects/<uuid>/download/` | GET | Download project |
+| `/api/projects/<uuid>/files/` | GET | Project file tree |
+| `/api/projects/<uuid>/file-content/` | GET | Read file |
+| `/api/projects/<uuid>/files/download/` | GET | Download file |
+| `/api/projects/<uuid>/files/delete/` | DELETE | Delete file |
+| `/api/projects/<uuid>/sync/` | POST | Sync uploaded zip |
+| `/api/projects/<uuid>/chat/` | POST | Send instruction |
+| `/api/projects/<uuid>/chat/history/` | GET | Retrieve chat history |
+
+
+---
+
+## 📌 Known Limitations
+
+- No diff approval step before edits are applied.
+- No undo/version history.
+- `replace` operations require unique text matches.
+- Long conversations eventually lose fine-grained context.
+- Binary files are never sent to the LLM.
+- Production deployments should tighten CORS settings.
+
+---
+
+## 🔮 Suggested Next Features
+
+1. Diff preview + approve/reject workflow.
+2. Git-backed undo history.
+3. Rolling chat summarisation.
+4. File relevance filtering before tool-calling.
+5. Syntax highlighting in the code viewer.
+6. Streaming assistant responses.
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome.
+
+1. Fork the repository.
+2. Create a branch:
+
+```bash
+git checkout -b feature/my-feature
+```
+
+3. Commit your changes:
+
+```bash
+git commit -m "Add my feature"
+```
+
+4. Push your branch:
+
+```bash
+git push origin feature/my-feature
+```
+
+5. Open a Pull Request.
+
+---
+
+
+## 💬 Support
+
+For bug reports, questions, or feature requests, please open an issue on GitHub.
