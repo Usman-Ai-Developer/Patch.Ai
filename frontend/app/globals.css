@@ -1,0 +1,39 @@
+/* frontend/app/globals.css */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  background: radial-gradient(circle at 30% 50%, rgba(59,130,246,0.08) 0%, transparent 60%),
+              linear-gradient(145deg, #0a0e14 0%, #111820 100%);
+  color: #e8edf2;
+  min-height: 100vh;
+}
+
+/* Keep your custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #1e2a36;
+  border-radius: 4px;
+}
+
+.blink-cursor::after {
+  content: "▍";
+  animation: blink 1s step-start infinite;
+  color: #3b82f6; /* brand blue */
+}
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
+/* Optional: a glowing text effect for headings */
+.glow-text {
+  background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}

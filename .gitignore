@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.env
+.venv
+venv/
+env/
+db.sqlite3
+*.log
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.local
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Docker
+docker-compose.override.yml
+*.pid
+
+# Media / uploads
+media/
+project_workspaces/
+staticfiles/
+
+# OS
+.DS_Store
+Thumbs.db
