@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import toast from "react-hot-toast";
 import { clearTokens } from "../lib/auth";
 import { deleteProject, downloadProject } from "../lib/api";
-import { SkeletonDashboard } from "./Skeleton";
+import { SkeletonDashboard } from './Skeleton';
 
 function timeAgo(iso) {
   const diff = (Date.now() - new Date(iso).getTime()) / 1000;
