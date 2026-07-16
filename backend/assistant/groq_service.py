@@ -1,18 +1,10 @@
 """
-Tool-calling chat loop with Groq. Instead of shipping every file in the
-project on every turn, the model first sees only the file tree (paths, no
-content) plus any remembered facts about the project. It can call read_file
-to pull in specific files it actually needs, then finishes by calling
-propose_edits with targeted old/new text replacements (or full content only
-for brand-new files) rather than rewriting whole files.
-
-This is the expensive part to get wrong, so every tool call and the final
-edit proposal are validated before anything touches disk (validation lives
-in file_ops.apply_patch_operations, not here).
+Tool-calling chat loop with Groq – now with `run_command` for shell access.
 """
 import json
 import logging
 import re
+import subprocess
 from django.conf import settings
 from groq import Groq, BadRequestError
 
@@ -22,23 +14,32 @@ logger = logging.getLogger(__name__)
 
 MAX_TOOL_ITERATIONS = 8
 
-SYSTEM_PROMPT = """You are a senior software engineer acting as an autonomous coding assistant \
-working inside an existing project. You do NOT receive the full codebase up front — only the \
-file tree and a short list of remembered facts about the project.
+SYSTEM_PROMPT = """You are a senior software engineer acting as an autonomous coding assistant.
 
-IMPORTANT RULES – FOLLOW THEM EXACTLY:
-1. **To read a file, you MUST call the `read_file` function.** Do NOT output something like `<function=read_file ...>` in your text. That will cause an error. Only call the function via the tool‑calling mechanism.
-2. **To propose edits, you MUST call the `propose_edits` function.** Do NOT describe edits in plain text – call the function.
-3. The file tree shows paths relative to the project root. Use these paths **exactly as shown** – do not prepend folders, do not add './' or '/'.
-4. Before using 'rewrite', verify the file exists in the tree. Use 'create' for new files.
-5. For 'replace' operations, the "old" text must match EXACTLY ONCE in the current file.
-6. If you don't have enough context, use `read_file` to fetch specific files first.
-7. If the instruction is ambiguous, doesn't require changes, or would be unsafe, respond conversationally and DO NOT call any tools.
+You have access to THREE tools:
 
-When you have actual file modifications to propose, call `propose_edits` with the operations.
-If you learn something durable about the project (its stack, conventions, prior decisions), include short one‑line entries in "facts". Don't repeat facts you've already been told.
+1. `read_file(path)` – read the content of a file. Use this when you need to see a file's content before making changes.
+2. `propose_edits(summary, operations, facts)` – propose file edits. This is the way to create, modify, or delete files.
+3. `run_command(command)` – execute a shell command **inside the project workspace**. Use this for:
+   - Scaffolding new projects (e.g., `django-admin startproject`, `npx create-react-app`, `flutter create`, `dotnet new`)
+   - Installing dependencies (`pip install`, `npm install`, `bundle install`)
+   - Running migrations (`python manage.py migrate`, `npx prisma migrate`)
+   - Building and running tests (`npm run build`, `gradle test`)
+   - Any command that helps set up or manage the project.
 
-You MUST use the provided functions to read files and propose edits. Never output function calls as plain text."""
+The `propose_edits` tool accepts an `operations` list. Each operation must have an `op` field, which can be:
+- `"create"` – for brand‑new files (requires `path` and `content`)
+- `"rewrite"` – for completely rewriting an existing file (requires `path` and `content`)
+- `"replace"` – for targeted replacement (requires `path`, `old`, and `new`)
+- `"delete"` – for removing a file (requires `path`)
+
+IMPORTANT RULES:
+- NEVER output a function call as plain text like `<function=propose_edits>...</function>` or `<function=read_file>...</function>`. Use the provided tool‑calling mechanism.
+- When using `run_command`, ensure the command is appropriate for the user's environment (e.g., use `npm` for Node, `dotnet` for .NET, etc.).
+- If the instruction is just a question or greeting, respond conversationally – do NOT call any tools.
+- Only call `propose_edits` when you have actual file modifications to propose.
+
+Remember: the three tools are `read_file`, `propose_edits`, and `run_command`. Use them wisely."""
 
 TOOLS = [
     {
@@ -71,9 +72,9 @@ TOOLS = [
                             "properties": {
                                 "op": {"type": "string", "enum": ["replace", "create", "rewrite", "delete"]},
                                 "path": {"type": "string"},
-                                "old": {"type": "string", "description": "Required for 'replace'. Exact unique substring to find."},
-                                "new": {"type": "string", "description": "Required for 'replace'. Replacement text."},
-                                "content": {"type": "string", "description": "Required for 'create'/'rewrite'. Full file content."},
+                                "old": {"type": "string", "description": "Required for 'replace'."},
+                                "new": {"type": "string", "description": "Required for 'replace'."},
+                                "content": {"type": "string", "description": "Required for 'create'/'rewrite'."},
                             },
                             "required": ["op", "path"],
                         },
@@ -81,44 +82,105 @@ TOOLS = [
                     "facts": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional short facts about the project worth remembering for future turns.",
+                        "description": "Optional short facts about the project.",
                     },
                 },
                 "required": ["summary", "operations"],
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_command",
+            "description": "Run a shell command inside the project workspace. Use this for scaffolding, installing dependencies, migrations, etc.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The shell command to execute (e.g., 'npm install', 'django-admin startproject myproject')"
+                    }
+                },
+                "required": ["command"],
+            },
+        },
+    },
 ]
-
 
 def _client():
     api_key = settings.GROQ_API_KEY
     if not api_key:
-        raise RuntimeError("GROQ_API_KEY is not set in the environment. Please add it to your .env file.")
+        raise RuntimeError("GROQ_API_KEY is not set.")
     try:
         return Groq(api_key=api_key)
     except TypeError as e:
         if "proxies" in str(e):
-            raise RuntimeError(
-                f"Groq client initialization failed due to a version mismatch: {e}. "
-                "Please upgrade the groq library: pip install --upgrade groq"
-            )
+            raise RuntimeError("Upgrade groq: pip install --upgrade groq")
         raise
 
+def _extract_function_call(content: str):
+    """Extract function call from plain‑text in various formats."""
+    # propose_edits
+    match = re.search(r'<function=propose_edits>(.*?)</function>', content, re.DOTALL)
+    if match:
+        try:
+            args = json.loads(match.group(1))
+            return {"name": "propose_edits", "arguments": args}
+        except json.JSONDecodeError:
+            pass
+
+    # read_file
+    match = re.search(r'<function=read_file>(.*?)</function>', content, re.DOTALL)
+    if match:
+        body = match.group(1).strip()
+        try:
+            args = json.loads(body)
+            if "path" in args:
+                return {"name": "read_file", "arguments": args}
+        except json.JSONDecodeError:
+            pass
+        if body.startswith("path="):
+            path = body[5:].strip()
+            return {"name": "read_file", "arguments": {"path": path}}
+        return {"name": "read_file", "arguments": {"path": body}}
+
+    # run_command
+    match = re.search(r'<function=run_command>(.*?)</function>', content, re.DOTALL)
+    if match:
+        body = match.group(1).strip()
+        try:
+            args = json.loads(body)
+            if "command" in args:
+                return {"name": "run_command", "arguments": args}
+        except json.JSONDecodeError:
+            pass
+        # Try to parse as command=...
+        if body.startswith("command="):
+            command = body[8:].strip()
+            return {"name": "run_command", "arguments": {"command": command}}
+        # Treat as bare command
+        return {"name": "run_command", "arguments": {"command": body}}
+
+    return None
 
 def _validate_operations(project, operations: list[dict]) -> tuple[bool, str]:
-    """Validate operations before sending to Groq to avoid API errors."""
     if not operations:
         return True, ""
 
     existing_paths = set(file_ops.list_text_file_paths(project))
+    workspace = file_ops.project_dir(project)
 
     for op in operations:
         op_type = op.get("op")
         path = op.get("path", "")
-
         if not path:
             return False, f"Missing 'path' in operation: {op}"
+
+        if op_type in ("create", "rewrite"):
+            full_path = workspace / path
+            if full_path.exists() and full_path.is_dir():
+                return False, f"Path '{path}' is a directory, cannot create/rewrite a file over it"
 
         if op_type in ("rewrite", "replace") and path not in existing_paths:
             return False, f"File '{path}' does not exist. Use 'create' instead of '{op_type}'."
@@ -128,12 +190,7 @@ def _validate_operations(project, operations: list[dict]) -> tuple[bool, str]:
 
     return True, ""
 
-
 def run_chat_turn(project, instruction: str, chat_history: list[dict], known_facts: list[str]) -> dict:
-    """
-    Runs the tool‑calling loop for one user instruction.
-    Returns {"summary": str, "operations": [...], "facts": [...], "files_read": [...]}
-    """
     client = _client()
 
     tree = file_ops.list_text_file_paths(project)
@@ -148,8 +205,8 @@ def run_chat_turn(project, instruction: str, chat_history: list[dict], known_fac
         "role": "user",
         "content": (
             f"PROJECT FILE TREE:\n{tree_block}\n\n"
-            f"REMEMBERED FACTS ABOUT THIS PROJECT:\n{facts_block}\n\n"
-            f"USER INSTRUCTION:\n{instruction}"
+            f"REMEMBERED FACTS:\n{facts_block}\n\n"
+            f"INSTRUCTION:\n{instruction}"
         ),
     })
 
@@ -166,48 +223,150 @@ def run_chat_turn(project, instruction: str, chat_history: list[dict], known_fac
                 max_tokens=4000,
             )
         except BadRequestError as e:
-            # Catch tool‑validation errors and return a helpful message
             error_msg = str(e)
-            if "tool call validation failed" in error_msg:
-                # Try to extract the problematic path from the error (optional)
+            if "tool call validation failed" in error_msg or "Failed to call a function" in error_msg:
                 logger.error(f"Tool validation error: {error_msg}")
+                if "failed_generation" in error_msg:
+                    extracted = _extract_function_call(error_msg)
+                    if extracted:
+                        if extracted["name"] == "read_file":
+                            path = extracted["arguments"].get("path", "")
+                            content = file_ops.read_single_file(project, path) if path else None
+                            if content is None:
+                                result = f"Error: Could not read '{path}'. Check the path against the file tree."
+                            else:
+                                files_read.append(path)
+                                result = content
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": "fallback",
+                                "content": result,
+                            })
+                            continue
+                        elif extracted["name"] == "propose_edits":
+                            args = extracted["arguments"]
+                            args.setdefault("operations", [])
+                            args.setdefault("facts", [])
+                            args["files_read"] = files_read
+                            is_valid, err_msg = _validate_operations(project, args.get("operations", []))
+                            if is_valid:
+                                return args
+                        elif extracted["name"] == "run_command":
+                            command = extracted["arguments"].get("command", "")
+                            workspace = file_ops.project_dir(project)
+                            try:
+                                proc = subprocess.run(
+                                    command,
+                                    shell=True,
+                                    cwd=str(workspace),
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=30,
+                                )
+                                output = proc.stdout + proc.stderr
+                                if proc.returncode != 0:
+                                    output = f"Error (code {proc.returncode}):\n{output}"
+                            except Exception as exc:
+                                output = f"Failed to run command: {str(exc)}"
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": "fallback",
+                                "content": output,
+                            })
+                            continue
                 return {
                     "summary": (
-                        "The AI tried to use a tool incorrectly. This may happen if the file tree is empty "
-                        "or the instruction doesn't match any files. Please ensure your project has text files "
-                        "and try rephrasing your request."
+                        "The AI tried to use a tool incorrectly. Please ensure you are only using "
+                        "the provided tools: read_file, propose_edits, and run_command."
                     ),
                     "operations": [],
                     "facts": [],
                     "files_read": files_read,
                 }
-            raise  # re‑raise other API errors
+            raise
 
         choice = response.choices[0]
         msg = choice.message
 
-        if not msg.tool_calls:
-            # Model didn't use any tool calls – treat as conversational response
-            return {
-                "summary": msg.content or "I didn't understand that. Could you rephrase?",
-                "operations": [],
-                "facts": [],
-                "files_read": files_read,
-            }
+        if msg.tool_calls:
+            messages.append({
+                "role": "assistant",
+                "content": msg.content or "",
+                "tool_calls": [tc.model_dump() for tc in msg.tool_calls],
+            })
+        else:
+            content = msg.content or ""
+            logger.info(f"No tool calls, raw content: {content[:500]}")
+            extracted = _extract_function_call(content)
+            if extracted:
+                if extracted["name"] == "read_file":
+                    path = extracted["arguments"].get("path", "")
+                    content = file_ops.read_single_file(project, path) if path else None
+                    if content is None:
+                        result = f"Error: Could not read '{path}'. Check the path against the file tree."
+                    else:
+                        files_read.append(path)
+                        result = content
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": "fallback",
+                        "content": result,
+                    })
+                    continue
+                elif extracted["name"] == "propose_edits":
+                    args = extracted["arguments"]
+                    args.setdefault("operations", [])
+                    args.setdefault("facts", [])
+                    args["files_read"] = files_read
+                    is_valid, err_msg = _validate_operations(project, args.get("operations", []))
+                    if is_valid:
+                        return args
+                    else:
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": "fallback",
+                            "content": f"Error: {err_msg}",
+                        })
+                        continue
+                elif extracted["name"] == "run_command":
+                    command = extracted["arguments"].get("command", "")
+                    workspace = file_ops.project_dir(project)
+                    try:
+                        proc = subprocess.run(
+                            command,
+                            shell=True,
+                            cwd=str(workspace),
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                        )
+                        output = proc.stdout + proc.stderr
+                        if proc.returncode != 0:
+                            output = f"Error (code {proc.returncode}):\n{output}"
+                    except Exception as exc:
+                        output = f"Failed to run command: {str(exc)}"
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": "fallback",
+                        "content": output,
+                    })
+                    continue
+            else:
+                return {
+                    "summary": content or "I don't understand. Could you rephrase?",
+                    "operations": [],
+                    "facts": [],
+                    "files_read": files_read,
+                }
 
-        messages.append({
-            "role": "assistant",
-            "content": msg.content or "",
-            "tool_calls": [tc.model_dump() for tc in msg.tool_calls],
-        })
-
+        # Process tool calls normally
         propose_call = next((tc for tc in msg.tool_calls if tc.function.name == "propose_edits"), None)
         if propose_call:
             try:
                 args = json.loads(propose_call.function.arguments)
             except json.JSONDecodeError:
                 logger.error("propose_edits args not valid JSON: %s", propose_call.function.arguments[:500])
-                return {"summary": "Model returned malformed edit data.", "operations": [], "facts": [], "files_read": files_read}
+                return {"summary": "Malformed edit data.", "operations": [], "facts": [], "files_read": files_read}
 
             args.setdefault("operations", [])
             args.setdefault("facts", [])
@@ -224,31 +383,54 @@ def run_chat_turn(project, instruction: str, chat_history: list[dict], known_fac
 
             return args
 
-        # Handle read_file calls
+        # Handle read_file
         for tc in msg.tool_calls:
-            if tc.function.name != "read_file":
-                continue
-            try:
-                args = json.loads(tc.function.arguments)
-                path = args.get("path", "")
-            except json.JSONDecodeError:
-                path = ""
-
-            content = file_ops.read_single_file(project, path) if path else None
-            if content is None:
-                result = f"Error: Could not read '{path}'. Check the path against the file tree."
-            else:
-                files_read.append(path)
-                result = content
-
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "content": result,
-            })
+            if tc.function.name == "read_file":
+                try:
+                    args = json.loads(tc.function.arguments)
+                    path = args.get("path", "")
+                except json.JSONDecodeError:
+                    path = ""
+                content = file_ops.read_single_file(project, path) if path else None
+                if content is None:
+                    result = f"Error: Could not read '{path}'. Check the path against the file tree."
+                else:
+                    files_read.append(path)
+                    result = content
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": result,
+                })
+            elif tc.function.name == "run_command":
+                try:
+                    args = json.loads(tc.function.arguments)
+                    command = args.get("command", "")
+                except json.JSONDecodeError:
+                    command = ""
+                workspace = file_ops.project_dir(project)
+                try:
+                    proc = subprocess.run(
+                        command,
+                        shell=True,
+                        cwd=str(workspace),
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    output = proc.stdout + proc.stderr
+                    if proc.returncode != 0:
+                        output = f"Error (code {proc.returncode}):\n{output}"
+                except Exception as exc:
+                    output = f"Failed to run command: {str(exc)}"
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": output,
+                })
 
     return {
-        "summary": "Reached the maximum number of file lookups without finishing. Try a more specific instruction.",
+        "summary": "Reached the maximum number of tool calls without finishing. Try a more specific instruction.",
         "operations": [],
         "facts": [],
         "files_read": files_read,
