@@ -69,13 +69,12 @@ function alignedGuides(edges, targets) {
 
 function WidgetHandle({ node, selected, onPropsChange, zoom, children }) {
   const props = node.props || {};
-  const [live, setLive] = useState(null);
   const wrapperRef = useRef(null);
 
-  const x = live?.x ?? props.x ?? 0;
-  const y = live?.y ?? props.y ?? 0;
-  const width = live?.width ?? (props.width !== "auto" ? props.width : undefined);
-  const height = live?.height ?? (props.height !== "auto" ? props.height : undefined);
+  const x = props.x ?? 0;
+  const y = props.y ?? 0;
+  const width = props.width !== "auto" ? props.width : undefined;
+  const height = props.height !== "auto" ? props.height : undefined;
   const isLocked = Boolean(props?.locked);
   const isHidden = Boolean(props?.hidden) || props?.visible === false;
 
@@ -98,47 +97,61 @@ function WidgetHandle({ node, selected, onPropsChange, zoom, children }) {
     return { parentSize, targets: collectSnapTargets(parentSize, siblings) };
   }
 
+  // Commit a finished gesture to the tree (runs once on mouseup, not per frame).
+  function commit(partial) {
+    onPropsChange(node.id, partial);
+  }
+
   function startDrag(e) {
     if (isLocked || isHidden) return;
     if (e.button !== 0 || e.target.closest("[data-resize-handle]")) return;
     e.stopPropagation();
+    const wrapper = wrapperRef.current;
     const startClient = { x: e.clientX, y: e.clientY };
     const startPos = { x: props.x || 0, y: props.y || 0 };
     const snapContext = measureSnapContext();
     const nodeSize = {
-      width: wrapperRef.current?.offsetWidth || 0,
-      height: wrapperRef.current?.offsetHeight || 0,
+      width: wrapper?.offsetWidth || 0,
+      height: wrapper?.offsetHeight || 0,
     };
     const threshold = SNAP_THRESHOLD / (zoom || 1);
-    let latest = null;
 
     function onMove(ev) {
       const dx = (ev.clientX - startClient.x) / (zoom || 1);
       const dy = (ev.clientY - startClient.y) / (zoom || 1);
       let nextX = Math.round(startPos.x + dx);
       let nextY = Math.round(startPos.y + dy);
-      let guides = null;
+
       if (snapContext) {
-        const { parentSize, targets } = snapContext;
-        const snapX = snapAxis([nextX, nextX + nodeSize.width / 2, nextX + nodeSize.width], targets.xs, threshold);
-        const snapY = snapAxis([nextY, nextY + nodeSize.height / 2, nextY + nodeSize.height], targets.ys, threshold);
+        const { targets } = snapContext;
+        const snapX = snapAxis(
+          [nextX, nextX + nodeSize.width / 2, nextX + nodeSize.width],
+          targets.xs,
+          threshold
+        );
+        const snapY = snapAxis(
+          [nextY, nextY + nodeSize.height / 2, nextY + nodeSize.height],
+          targets.ys,
+          threshold
+        );
         if (snapX !== null) nextX += snapX;
         if (snapY !== null) nextY += snapY;
-        guides = {
-          xs: alignedGuides([nextX, nextX + nodeSize.width / 2, nextX + nodeSize.width], targets.xs),
-          ys: alignedGuides([nextY, nextY + nodeSize.height / 2, nextY + nodeSize.height], targets.ys),
-          width: parentSize.width,
-          height: parentSize.height,
-        };
       }
-      latest = { x: nextX, y: nextY, guides };
-      setLive(latest);
+
+      // Mutate the DOM directly so the widget follows the cursor without a
+      // React re-render on every frame; the value is committed to the tree
+      // once on mouseup.
+      wrapper.style.left = nextX + "px";
+      wrapper.style.top = nextY + "px";
+
+      window.__widgetLive = { x: nextX, y: nextY };
     }
     function onUp() {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
-      if (latest) onPropsChange(node.id, { x: latest.x, y: latest.y });
-      setLive(null);
+      const live = window.__widgetLive;
+      if (live) commit({ x: live.x, y: live.y });
+      window.__widgetLive = null;
     }
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -162,6 +175,7 @@ function WidgetHandle({ node, selected, onPropsChange, zoom, children }) {
     if (isLocked || isHidden) return;
     e.stopPropagation();
     e.preventDefault();
+    const wrapper = wrapperRef.current;
     const startClient = { x: e.clientX, y: e.clientY };
     const startWidth = typeof props.width === "number" ? props.width : 160;
     const startHeight = typeof props.height === "number" ? props.height : 80;
@@ -173,7 +187,6 @@ function WidgetHandle({ node, selected, onPropsChange, zoom, children }) {
     const startMaxY = baseY + startHeight;
     const snapContext = measureSnapContext();
     const threshold = SNAP_THRESHOLD / (zoom || 1);
-    let latest = null;
 
     function onMove(ev) {
       const dw = (ev.clientX - startClient.x) / (zoom || 1);
@@ -198,9 +211,8 @@ function WidgetHandle({ node, selected, onPropsChange, zoom, children }) {
         nextHeight = MIN_FREE_SIZE;
       }
 
-      let guides = null;
       if (snapContext) {
-        const { parentSize, targets } = snapContext;
+        const { targets } = snapContext;
         const snapX = snapAxis(handle.adjustsLeft ? [nextMinX] : [nextMaxX], targets.xs, threshold);
         const snapY = snapAxis(handle.adjustsTop ? [nextMinY] : [nextMaxY], targets.ys, threshold);
         if (snapX !== null) {
@@ -213,28 +225,27 @@ function WidgetHandle({ node, selected, onPropsChange, zoom, children }) {
           nextHeight = Math.max(MIN_FREE_SIZE, nextMaxY - nextMinY);
           if (handle.adjustsTop) nextMinY = nextMaxY - nextHeight;
         }
-        guides = {
-          xs: handle.adjustsLeft ? alignedGuides([nextMinX], targets.xs) : alignedGuides([nextMaxX], targets.xs),
-          ys: handle.adjustsTop ? alignedGuides([nextMinY], targets.ys) : alignedGuides([nextMaxY], targets.ys),
-          width: parentSize.width,
-          height: parentSize.height,
-        };
       }
-      latest = { x: nextMinX, y: nextMinY, width: nextWidth, height: nextHeight, guides };
-      setLive(latest);
+
+      // Mutate the DOM directly for a smooth resize; committed to the tree on
+      // mouseup. Left/top edges move the widget, so update left/top too.
+      if (width && width !== "auto") wrapper.style.width = nextWidth + "px";
+      if (height && height !== "auto") wrapper.style.height = nextHeight + "px";
+      if (handle.adjustsLeft) wrapper.style.left = nextMinX + "px";
+      if (handle.adjustsTop) wrapper.style.top = nextMinY + "px";
+
+      window.__widgetLive = { x: nextMinX, y: nextMinY, width: nextWidth, height: nextHeight };
     }
     function onUp() {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
-      if (latest) onPropsChange(node.id, { x: latest.x, y: latest.y, width: latest.width, height: latest.height });
-      setLive(null);
+      const live = window.__widgetLive;
+      if (live) commit({ x: live.x, y: live.y, width: live.width, height: live.height });
+      window.__widgetLive = null;
     }
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
   }
-
-  const showGuides = live?.guides && (live.guides.xs.length > 0 || live.guides.ys.length > 0);
-  const guideThickness = 1 / (zoom || 1);
 
   const style = {
     position: "absolute",
@@ -247,30 +258,6 @@ function WidgetHandle({ node, selected, onPropsChange, zoom, children }) {
 
   return (
     <>
-      {selected && showGuides && (
-        <div className="absolute inset-0 z-50 pointer-events-none" aria-hidden="true">
-          {live.guides.xs.map((guideX) => (
-            <div
-              key={`guide-x-${guideX}`}
-              className="absolute top-0 bottom-0 bg-secondary"
-              style={{
-                left: Math.max(0, Math.min(guideX, live.guides.width - guideThickness)),
-                width: `${guideThickness}px`,
-              }}
-            />
-          ))}
-          {live.guides.ys.map((guideY) => (
-            <div
-              key={`guide-y-${guideY}`}
-              className="absolute left-0 right-0 bg-secondary"
-              style={{
-                top: Math.max(0, Math.min(guideY, live.guides.height - guideThickness)),
-                height: `${guideThickness}px`,
-              }}
-            />
-          ))}
-        </div>
-      )}
       <div
         ref={wrapperRef}
         data-node-id={node.id}

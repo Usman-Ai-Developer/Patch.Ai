@@ -179,6 +179,7 @@ export default function VisualBuilderApp({ projectId }) {
   const isUndoRedoRef = useRef(false);
   const prevTreeRef = useRef(null);
   const prevSelectedRef = useRef([]);
+  const prevLayoutRef = useRef(null);
 
   const pushHistory = useCallback((newTree, newSelectedIds) => {
     if (isUndoRedoRef.current || !newTree) return;
@@ -507,6 +508,14 @@ export default function VisualBuilderApp({ projectId }) {
     } else {
       layout = customPages[activePage.key]?.layout || null;
     }
+    const layoutJson = JSON.stringify(layout);
+    // Only reset the canvas when the page or its layout actually changed. A
+    // blueprint refresh (e.g. after Save & Generate Code) that keeps the same
+    // layout must not wipe the selection, otherwise the active shape goes
+    // inactive right after code generation.
+    if (prevLayoutRef.current === layoutJson) return;
+    prevLayoutRef.current = layoutJson;
+
     const newTree = layout ? layout : makeEmptyRoot();
     setTree(newTree);
     setSelectedIds([]);
@@ -515,6 +524,14 @@ export default function VisualBuilderApp({ projectId }) {
     prevTreeRef.current = newTree;
     prevSelectedRef.current = [];
   }, [activePage, blueprint, clearHistory, editingComponentId]);
+
+  // Keep prevLayoutRef in sync with the locally-edited tree so a blueprint
+  // refresh (e.g. after Save & Generate Code) that produced the same layout
+  // does not reset the canvas and clear the active selection.
+  useEffect(() => {
+    if (editingComponentId) return;
+    prevLayoutRef.current = JSON.stringify(tree);
+  }, [tree, editingComponentId]);
 
   // Default page
   useEffect(() => {
