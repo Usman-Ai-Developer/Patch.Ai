@@ -2,7 +2,6 @@
 "use client";
 
 import React, { useMemo, useRef, useState } from "react";
-import { useDraggable, useDroppable } from "@dnd-kit/core";
 import { WIDGETS, INSTANCE_TYPE } from "./WidgetRegistry";
 
 function isRoot(node) {
@@ -68,8 +67,8 @@ function alignedGuides(edges, targets) {
   return Array.from(guides);
 }
 
-function FreePositionChild({ childNode, children, onPropsChange, zoom }) {
-  const props = childNode.props || {};
+function WidgetHandle({ node, selected, onPropsChange, zoom, children }) {
+  const props = node.props || {};
   const [live, setLive] = useState(null);
   const wrapperRef = useRef(null);
 
@@ -77,10 +76,10 @@ function FreePositionChild({ childNode, children, onPropsChange, zoom }) {
   const y = live?.y ?? props.y ?? 0;
   const width = live?.width ?? (props.width !== "auto" ? props.width : undefined);
   const height = live?.height ?? (props.height !== "auto" ? props.height : undefined);
+  const isLocked = Boolean(props?.locked);
+  const isHidden = Boolean(props?.hidden) || props?.visible === false;
 
-  // Measure the Frame (our offsetParent) plus the other free-positioned
-  // siblings once per gesture. offsetLeft/offsetWidth are layout px, which the
-  // canvas's scale(zoom) transform doesn't change, so no zoom conversion here.
+  // Measure the offsetParent plus sibling handles once per gesture for snapping.
   function measureSnapContext() {
     const wrapper = wrapperRef.current;
     const parent = wrapper?.parentElement;
@@ -88,7 +87,7 @@ function FreePositionChild({ childNode, children, onPropsChange, zoom }) {
     const parentSize = { width: parent.clientWidth, height: parent.clientHeight };
     const siblings = [];
     Array.from(parent.children).forEach((el) => {
-      if (el === wrapper || !el.hasAttribute("data-free-position-child")) return;
+      if (el === wrapper || !el.hasAttribute("data-widget-handle")) return;
       siblings.push({
         x: el.offsetLeft,
         y: el.offsetTop,
@@ -100,19 +99,18 @@ function FreePositionChild({ childNode, children, onPropsChange, zoom }) {
   }
 
   function startDrag(e) {
-    if (childNode.props?.locked || childNode.props?.hidden) return;
+    if (isLocked || isHidden) return;
     if (e.button !== 0 || e.target.closest("[data-resize-handle]")) return;
     e.stopPropagation();
     const startClient = { x: e.clientX, y: e.clientY };
     const startPos = { x: props.x || 0, y: props.y || 0 };
     const snapContext = measureSnapContext();
-    // width/height may be "auto", so snap against what's actually rendered.
     const nodeSize = {
       width: wrapperRef.current?.offsetWidth || 0,
       height: wrapperRef.current?.offsetHeight || 0,
     };
     const threshold = SNAP_THRESHOLD / (zoom || 1);
-    let latest = null; // last live position, committed once on mouseup
+    let latest = null;
 
     function onMove(ev) {
       const dx = (ev.clientX - startClient.x) / (zoom || 1);
@@ -120,7 +118,6 @@ function FreePositionChild({ childNode, children, onPropsChange, zoom }) {
       let nextX = Math.round(startPos.x + dx);
       let nextY = Math.round(startPos.y + dy);
       let guides = null;
-
       if (snapContext) {
         const { parentSize, targets } = snapContext;
         const snapX = snapAxis([nextX, nextX + nodeSize.width / 2, nextX + nodeSize.width], targets.xs, threshold);
@@ -134,14 +131,13 @@ function FreePositionChild({ childNode, children, onPropsChange, zoom }) {
           height: parentSize.height,
         };
       }
-      // If nothing is within threshold, nextX/nextY are the plain drag result.
       latest = { x: nextX, y: nextY, guides };
       setLive(latest);
     }
     function onUp() {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
-      if (latest) onPropsChange(childNode.id, { x: latest.x, y: latest.y });
+      if (latest) onPropsChange(node.id, { x: latest.x, y: latest.y });
       setLive(null);
     }
     window.addEventListener("mousemove", onMove);
@@ -149,7 +145,7 @@ function FreePositionChild({ childNode, children, onPropsChange, zoom }) {
   }
 
   function startResize(e) {
-    if (childNode.props?.locked || childNode.props?.hidden) return;
+    if (isLocked || isHidden) return;
     e.stopPropagation();
     e.preventDefault();
     const startClient = { x: e.clientX, y: e.clientY };
@@ -157,13 +153,11 @@ function FreePositionChild({ childNode, children, onPropsChange, zoom }) {
       width: typeof props.width === "number" ? props.width : 160,
       height: typeof props.height === "number" ? props.height : 80,
     };
-    // Resizing grows from the fixed top-left corner, so only the right and
-    // bottom edges need to snap.
     const baseX = props.x || 0;
     const baseY = props.y || 0;
     const snapContext = measureSnapContext();
     const threshold = SNAP_THRESHOLD / (zoom || 1);
-    let latest = null; // last live size, committed once on mouseup
+    let latest = null;
 
     function onMove(ev) {
       const dw = (ev.clientX - startClient.x) / (zoom || 1);
@@ -171,7 +165,6 @@ function FreePositionChild({ childNode, children, onPropsChange, zoom }) {
       let nextWidth = Math.max(MIN_FREE_SIZE, Math.round(startSize.width + dw));
       let nextHeight = Math.max(MIN_FREE_SIZE, Math.round(startSize.height + dh));
       let guides = null;
-
       if (snapContext) {
         const { parentSize, targets } = snapContext;
         const snapRight = snapAxis([baseX + nextWidth], targets.xs, threshold);
@@ -191,7 +184,7 @@ function FreePositionChild({ childNode, children, onPropsChange, zoom }) {
     function onUp() {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
-      if (latest) onPropsChange(childNode.id, { width: latest.width, height: latest.height });
+      if (latest) onPropsChange(node.id, { width: latest.width, height: latest.height });
       setLive(null);
     }
     window.addEventListener("mousemove", onMove);
@@ -199,13 +192,20 @@ function FreePositionChild({ childNode, children, onPropsChange, zoom }) {
   }
 
   const showGuides = live?.guides && (live.guides.xs.length > 0 || live.guides.ys.length > 0);
-  // 1 screen px regardless of zoom, clamped so edge guides aren't swallowed by
-  // the Frame's overflow-hidden clip at its right/bottom edge.
   const guideThickness = 1 / (zoom || 1);
+
+  const style = {
+    position: "absolute",
+    left: x,
+    top: y,
+  };
+  if (width && width !== "auto") style.width = typeof width === "number" ? `${width}px` : width;
+  if (height && height !== "auto") style.height = typeof height === "number" ? `${height}px` : height;
+  if (isLocked) style.pointerEvents = "none";
 
   return (
     <>
-      {showGuides && (
+      {selected && showGuides && (
         <div className="absolute inset-0 z-50 pointer-events-none" aria-hidden="true">
           {live.guides.xs.map((guideX) => (
             <div
@@ -231,18 +231,20 @@ function FreePositionChild({ childNode, children, onPropsChange, zoom }) {
       )}
       <div
         ref={wrapperRef}
-        data-free-position-child={childNode.id}
-        style={{ position: "absolute", left: x, top: y, width, height }}
+        data-widget-handle={node.id}
+        style={style}
         onMouseDown={startDrag}
         className="cursor-move"
       >
         {children}
-        <div
-          data-resize-handle
-          onMouseDown={startResize}
-          className="absolute -bottom-1 -right-1 w-3 h-3 rounded-sm bg-secondary opacity-0 group-hover:opacity-100 hover:opacity-100 cursor-nwse-resize z-20"
-          title="Drag to resize"
-        />
+        {selected && !isLocked && !isHidden && (
+          <div
+            data-resize-handle
+            onMouseDown={startResize}
+            className="absolute -bottom-1 -right-1 w-3 h-3 rounded-sm bg-secondary opacity-0 group-hover:opacity-100 hover:opacity-100 cursor-nwse-resize z-20"
+            title="Drag to resize"
+          />
+        )}
       </div>
     </>
   );
@@ -284,33 +286,6 @@ export default function CanvasNode({
     node.id !== "root" &&
     (Boolean(effectiveNode.props?.hidden) || effectiveNode.props?.visible === false);
   const isLocked = Boolean(effectiveNode.props?.locked);
-
-  const isDraggableNode =
-    node.id !== "root" &&
-    !readOnly &&
-    !isLocked &&
-    node.type !== INSTANCE_TYPE &&
-    !def?.freePositioning; // free-positioned children are dragged via FreePositionChild
-  const isDroppableNode = def?.isContainer && !readOnly;
-
-  const { attributes: dragAttributes, listeners: dragListeners, setNodeRef: setDragRef } =
-    useDraggable({
-      id: `canvas-node-${node.id}`,
-      data: { source: "canvas", nodeId: node.id, type: node.type },
-      disabled: !isDraggableNode,
-      activationConstraint: { distance: 5 },
-    });
-  const { attributes: dropAttributes, listeners: dropListeners, setNodeRef: setDropRef, isOver } =
-    useDroppable({
-      id: `canvas-drop-${node.id}`,
-      data: { nodeId: node.id, isContainer: Boolean(def?.isContainer), freePositioning: Boolean(def?.freePositioning) },
-      disabled: !isDroppableNode,
-    });
-
-  const setNodeRef = (el) => {
-    setDragRef(el);
-    setDropRef(el);
-  };
 
   // Which prop holds this widget's visible text. Text/Heading/Button/Link use
   // "text"; cards and stat widgets use "label"/"title". Containers have no
@@ -391,14 +366,9 @@ export default function CanvasNode({
       />
     );
     // Inside a component instance the tree is a read-only preview: no drag
-    // handles, no selection, and free-positioned children keep their layout
-    // but must not be draggable (they belong to the master, not this page).
-    if (!childIsFreePositioned || readOnly) return rendered;
-    return (
-      <FreePositionChild key={child.id} childNode={child} onPropsChange={onPropsChange} zoom={zoom}>
-        {rendered}
-      </FreePositionChild>
-    );
+    // handles, no selection (WidgetHandle inside each CanvasNode is disabled
+    // when readOnly). Render children directly.
+    return rendered;
   });
 
   // ─── Component instance ─────────────────────────────────────────────
@@ -499,36 +469,19 @@ export default function CanvasNode({
     );
   }
 
-  // For free-positioning widgets (Frame), apply width/height directly via style
-  const style = {};
-  if (def.freePositioning) {
-    const w = node.props?.width;
-    const h = node.props?.height;
-    if (w && w !== "auto") style.width = typeof w === "number" ? `${w}px` : w;
-    if (h && h !== "auto") style.height = typeof h === "number" ? `${h}px` : h;
-  }
-  // A locked layer is visible but untouchable: clicks fall through to its
-  // container, so it can only be unlocked from the Layers panel.
-  if (isLocked) style.pointerEvents = "none";
-
+  // Every non-root widget is rendered inside WidgetHandle, which positions it
+  // absolutely at x/y, sizes it by width/height, and makes it draggable +
+  // resizable via cursor (with alignment guides). Shapes, frames and any other
+  // widget can therefore be moved and adjusted directly on the canvas.
   return (
+    <WidgetHandle
+      node={effectiveNode}
+      selected={isSelected}
+      onPropsChange={onPropsChange}
+      zoom={zoom}
+    >
     <div
-      ref={setNodeRef}
-      data-node-id={node.id}
-      {...dragAttributes}
-      {...dragListeners}
-      {...dropAttributes}
-      {...dropListeners}
-      className={
-        readOnly || isLocked
-          ? "relative"
-          : `group relative ${
-              isSelected
-                ? "ring-2 ring-secondary ring-offset-2 ring-offset-surface"
-                : "hover:ring-1 hover:ring-white/20"
-            }`
-      }
-      style={style}
+      className="relative w-full h-full"
       onClick={
         readOnly || isLocked
           ? undefined
@@ -537,73 +490,73 @@ export default function CanvasNode({
               onSelect(node.id, e);
             }
       }
-      onDoubleClick={beginEdit}
-      title={!readOnly && textKey ? "Double-click to edit text" : undefined}
     >
       {!readOnly && !isLocked && (
         <div
           className={`absolute -top-3 -left-1 z-10 items-center gap-1 bg-surface-container-highest rounded px-1 py-0.5 text-[10px] ${
             isSelected ? "flex" : "hidden group-hover:flex"
           }`}
+          onMouseDown={(e) => e.stopPropagation()}
         >
-          <span className="text-on-surface-variant/70">{def.label}</span>
-          {def.isContainer && node.children?.length > 0 && (
+            <span className="text-on-surface-variant/70">{def.label}</span>
+            {def.isContainer && node.children?.length > 0 && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onUngroup(node.id);
+                }}
+                className="material-symbols-outlined text-[12px] hover:text-secondary"
+                title="Ungroup — lift children up a level (⌘/Ctrl+Shift+G)"
+              >
+                deselect
+              </button>
+            )}
             <button
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                onUngroup(node.id);
+                onDuplicate(node.id);
               }}
               className="material-symbols-outlined text-[12px] hover:text-secondary"
-              title="Ungroup — lift children up a level (⌘/Ctrl+Shift+G)"
+              title="Duplicate (⌘/Ctrl+D)"
             >
-              deselect
+              content_copy
             </button>
-          )}
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDuplicate(node.id);
-            }}
-            className="material-symbols-outlined text-[12px] hover:text-secondary"
-            title="Duplicate (⌘/Ctrl+D)"
-          >
-            content_copy
-          </button>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete(node.id);
-            }}
-            className="material-symbols-outlined text-[12px] hover:text-error"
-            title="Delete (Del)"
-          >
-            delete
-          </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete(node.id);
+              }}
+              className="material-symbols-outlined text-[12px] hover:text-error"
+              title="Delete (Del)"
+            >
+              delete
+            </button>
+          </div>
+        )}
+        <div className={editing ? "invisible" : undefined}>
+          <Preview node={effectiveNode}>{childElements}</Preview>
         </div>
-      )}
-      <div className={editing ? "invisible" : undefined}>
-        <Preview node={effectiveNode}>{childElements}</Preview>
+        {editing && (
+          <div
+            className="absolute inset-0 z-40 flex items-center rounded bg-surface-container-lowest/95 px-1"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <input
+              autoFocus
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={handleEditKeyDown}
+              onBlur={commitEdit}
+              aria-label={`Edit ${def.label} text`}
+              className="w-full rounded border border-secondary bg-surface-container-low px-1.5 py-1 text-sm text-on-surface outline-none focus:ring-1 focus:ring-secondary/40"
+            />
+          </div>
+        )}
       </div>
-      {editing && (
-        <div
-          className="absolute inset-0 z-40 flex items-center rounded bg-surface-container-lowest/95 px-1"
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <input
-            autoFocus
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={handleEditKeyDown}
-            onBlur={commitEdit}
-            aria-label={`Edit ${def.label} text`}
-            className="w-full rounded border border-secondary bg-surface-container-low px-1.5 py-1 text-sm text-on-surface outline-none focus:ring-1 focus:ring-secondary/40"
-          />
-        </div>
-      )}
-    </div>
+    </WidgetHandle>
   );
 }

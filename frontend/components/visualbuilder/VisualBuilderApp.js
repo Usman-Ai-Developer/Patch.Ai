@@ -372,6 +372,19 @@ export default function VisualBuilderApp({ projectId }) {
             }
           }
         }
+        // Dropped on the canvas background: place at the drop point so the
+        // new shape/frame appears where the user released it.
+        if (cx != null && cy != null) {
+          const canvas = document.querySelector(".overflow-hidden.relative");
+          if (canvas) {
+            const rect = canvas.getBoundingClientRect();
+            node.props = {
+              ...node.props,
+              x: Math.round(cx - rect.left),
+              y: Math.round(cy - rect.top),
+            };
+          }
+        }
         return { ...root, children: [...(root.children || []), node] };
       });
       setSelectedIds([node.id]);
