@@ -29,6 +29,8 @@ import {
   updateNodeProps,
   findNode,
   insertNode,
+  moveNode,
+  moveNodeAfter,
   groupNodes,
   ungroupNode,
   alignNodes,
@@ -284,44 +286,128 @@ export default function VisualBuilderApp({ projectId }) {
       const id = el.getAttribute && el.getAttribute("data-node-id");
       if (!id || id === "root") continue;
       const node = findNode(tree, id);
-      if (node && WIDGETS[node.type]?.freePositioning) return { node, el };
+      if (node) return { node, el };
     }
     return null;
+  }
+
+  // Given a drag-over target (a canvas droppable), decide where to place the
+  // dragged node: into a container's children, after a non-container sibling,
+  // or free-positioned inside a Frame at the pointer location.
+  function resolveDropTarget(tree, draggedId, overId, cx, cy) {
+    const dragged = findNode(tree, draggedId);
+    if (!dragged) return null;
+    const target = findNode(tree, overId);
+    if (!target || target.id === draggedId) return null;
+    // Can't move a node into its own descendant.
+    if (findNode(dragged, overId)) return null;
+
+    const targetIsContainer = WIDGETS[target.type]?.isContainer;
+    const targetFreePositions = WIDGETS[target.type]?.freePositioning;
+
+    if (targetIsContainer) {
+      return { kind: "into", parentId: target.id, index: -1 };
+    }
+    if (targetFreePositions) {
+      const el = document.querySelector(`[data-node-id="${overId}"]`);
+      if (el && cx != null && cy != null) {
+        const rect = el.getBoundingClientRect();
+        return {
+          kind: "free",
+          parentId: target.id,
+          x: Math.round(cx - rect.left),
+          y: Math.round(cy - rect.top),
+        };
+      }
+      return { kind: "into", parentId: target.id, index: -1 };
+    }
+    return { kind: "after", parentId: findParent(tree, overId)?.id, afterId: overId };
   }
 
   function handleDragEnd(event) {
     const { active, over } = event;
     setActiveDrag(null);
-    if (!over) return;
     const data = active.data.current;
-    if (!data || data.source !== "palette") return;
 
-    const node = createDefaultNode(data.widgetType);
-    if (!node) return;
-    if (data.componentId) {
-      // A palette "component" item drops an Instance, not a new widget tree.
-      node.props = { ...node.props, componentId: data.componentId, name: data.label || "Component" };
-    }
-
-    const dropRect = event.active.rect.current?.translated;
-    const cx = dropRect ? dropRect.left + dropRect.width / 2 : null;
-    const cy = dropRect ? dropRect.top + dropRect.height / 2 : null;
-
-    handleTreeChange((prev) => {
-      const root = prev || makeEmptyRoot();
-      const frameHit = cx != null ? findFrameAtPoint(cx, cy, root) : null;
-      if (frameHit) {
-        const frameRect = frameHit.el.getBoundingClientRect();
+    // ─── Palette drop: create a new widget from the palette ─────────────
+    if (data?.source === "palette") {
+      if (!over) return;
+      const node = createDefaultNode(data.widgetType);
+      if (!node) return;
+      if (data.componentId) {
         node.props = {
           ...node.props,
-          x: Math.round(cx - frameRect.left),
-          y: Math.round(cy - frameRect.top),
+          componentId: data.componentId,
+          name: data.label || "Component",
         };
-        return insertNode(root, frameHit.node.id, node, -1);
       }
-      return { ...root, children: [...(root.children || []), node] };
-    });
-    setSelectedIds([node.id]);
+
+      const dropRect = event.active.rect.current?.translated;
+      const cx = dropRect ? dropRect.left + dropRect.width / 2 : null;
+      const cy = dropRect ? dropRect.top + dropRect.height / 2 : null;
+
+      const overId = over.data.current?.nodeId;
+      const overData = over.data.current;
+      const targetIsContainer = overData?.isContainer;
+      const targetFreePositions = overData?.freePositioning;
+
+      handleTreeChange((prev) => {
+        const root = prev || makeEmptyRoot();
+        if (overId && overId !== "root") {
+          const target = findNode(root, overId);
+          if (target && targetIsContainer) {
+            node.props = { ...node.props, x: 0, y: 0 };
+            return insertNode(root, overId, node, -1);
+          }
+          if (target && targetFreePositions) {
+            const el = document.querySelector(`[data-node-id="${overId}"]`);
+            if (el && cx != null && cy != null) {
+              const rect = el.getBoundingClientRect();
+              node.props = {
+                ...node.props,
+                x: Math.round(cx - rect.left),
+                y: Math.round(cy - rect.top),
+              };
+              return insertNode(root, overId, node, -1);
+            }
+          }
+        }
+        return { ...root, children: [...(root.children || []), node] };
+      });
+      setSelectedIds([node.id]);
+      return;
+    }
+
+    // ─── Canvas drag: reposition an existing widget ─────────────────────
+    if (data?.source === "canvas") {
+      const draggedId = data.nodeId;
+      if (!draggedId || !over) return;
+      const overId = over.data.current?.nodeId;
+      if (!overId || overId === draggedId || overId === "root") return;
+      const cx = event.active.rect.current?.translated?.left + (event.active.rect.current?.translated?.width || 0) / 2;
+      const cy = event.active.rect.current?.translated?.top + (event.active.rect.current?.translated?.height || 0) / 2;
+
+      const resolution = resolveDropTarget(tree, draggedId, overId, cx, cy);
+      if (!resolution) return;
+
+      handleTreeChange((prev) => {
+        let next = prev;
+        if (resolution.kind === "into") {
+          next = moveNode(next, draggedId, resolution.parentId, resolution.index);
+        } else if (resolution.kind === "after") {
+          next = moveNodeAfter(next, draggedId, resolution.afterId);
+        } else if (resolution.kind === "free") {
+          next = moveNode(next, draggedId, resolution.parentId, -1);
+          next = updateNodeProps(next, draggedId, {
+            x: resolution.x,
+            y: resolution.y,
+          });
+        }
+        return next;
+      });
+      setSelectedIds([draggedId]);
+      return;
+    }
   }
 
   // ─── State ────────────────────────────────────────────────────────
@@ -1574,9 +1660,9 @@ export default function VisualBuilderApp({ projectId }) {
           </>
         )}
 
-        {/* ─── Canvas + Properties ───────────────────────────────── */}
-        <div className="flex-1 flex min-h-0">
-          <DndContext sensors={dndSensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+        {/* ─── Canvas + Properties (inside DndContext so palette and canvas share one DnD context) ─── */}
+        <DndContext sensors={dndSensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+          <div className="flex-1 flex min-h-0">
             {tree ? (
               <BuilderDataProvider
                 projectId={projectId}
@@ -1601,14 +1687,14 @@ export default function VisualBuilderApp({ projectId }) {
                 Select a page from the left to start building.
               </div>
             )}
-            <DragOverlay>
-              {activeDrag ? (
-                <div className="px-3 py-1.5 rounded-lg bg-secondary text-on-secondary text-xs font-medium shadow-lg">
-                  {WIDGETS[activeDrag.widgetType]?.label || "Widget"}
-                </div>
-              ) : null}
-            </DragOverlay>
-          </DndContext>
+          </div>
+          <DragOverlay>
+            {activeDrag ? (
+              <div className="px-3 py-1.5 rounded-lg bg-secondary text-on-secondary text-xs font-medium shadow-lg">
+                {WIDGETS[activeDrag?.widgetType ?? activeDrag?.type]?.label || "Widget"}
+              </div>
+            ) : null}
+          </DragOverlay>
           {!editingComponentId && selectedNode?.type === INSTANCE_TYPE ? (
             <InstancePanel
               component={componentsById[selectedNode.props?.componentId]}
@@ -1644,7 +1730,7 @@ export default function VisualBuilderApp({ projectId }) {
               />
             </div>
           )}
-        </div>
+        </DndContext>
       </div>
       {showTokensPanel && (
         <TokensPanel tokens={designTokens} onSave={handleSaveTokens} onClose={() => setShowTokensPanel(false)} />

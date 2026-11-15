@@ -2,6 +2,7 @@
 "use client";
 
 import React, { useMemo, useRef, useState } from "react";
+import { useDraggable, useDroppable } from "@dnd-kit/core";
 import { WIDGETS, INSTANCE_TYPE } from "./WidgetRegistry";
 
 function isRoot(node) {
@@ -284,6 +285,33 @@ export default function CanvasNode({
     (Boolean(effectiveNode.props?.hidden) || effectiveNode.props?.visible === false);
   const isLocked = Boolean(effectiveNode.props?.locked);
 
+  const isDraggableNode =
+    node.id !== "root" &&
+    !readOnly &&
+    !isLocked &&
+    node.type !== INSTANCE_TYPE &&
+    !def?.freePositioning; // free-positioned children are dragged via FreePositionChild
+  const isDroppableNode = def?.isContainer && !readOnly;
+
+  const { attributes: dragAttributes, listeners: dragListeners, setNodeRef: setDragRef } =
+    useDraggable({
+      id: `canvas-node-${node.id}`,
+      data: { source: "canvas", nodeId: node.id, type: node.type },
+      disabled: !isDraggableNode,
+      activationConstraint: { distance: 5 },
+    });
+  const { attributes: dropAttributes, listeners: dropListeners, setNodeRef: setDropRef, isOver } =
+    useDroppable({
+      id: `canvas-drop-${node.id}`,
+      data: { nodeId: node.id, isContainer: Boolean(def?.isContainer), freePositioning: Boolean(def?.freePositioning) },
+      disabled: !isDroppableNode,
+    });
+
+  const setNodeRef = (el) => {
+    setDragRef(el);
+    setDropRef(el);
+  };
+
   // Which prop holds this widget's visible text. Text/Heading/Button/Link use
   // "text"; cards and stat widgets use "label"/"title". Containers have no
   // single text prop, and instances are not editable in place.
@@ -485,7 +513,12 @@ export default function CanvasNode({
 
   return (
     <div
+      ref={setNodeRef}
       data-node-id={node.id}
+      {...dragAttributes}
+      {...dragListeners}
+      {...dropAttributes}
+      {...dropListeners}
       className={
         readOnly || isLocked
           ? "relative"
