@@ -144,17 +144,33 @@ function WidgetHandle({ node, selected, onPropsChange, zoom, children }) {
     window.addEventListener("mouseup", onUp);
   }
 
-  function startResize(e) {
+  // Resize handles for every edge/corner. `adjustsLeft/adjustsTop` mean the
+  // drag moves that edge (so x/y and the opposite size change); right/bottom
+  // handles keep x/y fixed and only grow/shrink width/height.
+  const RESIZE_HANDLES = [
+    { id: "nw", cursor: "nwse-resize", left: 0, top: 0, adjustsLeft: true, adjustsTop: true },
+    { id: "n", cursor: "ns-resize", left: "50%", top: 0, adjustsLeft: false, adjustsTop: true },
+    { id: "ne", cursor: "nesw-resize", left: "100%", top: 0, adjustsLeft: false, adjustsTop: true },
+    { id: "w", cursor: "ew-resize", left: 0, top: "50%", adjustsLeft: true, adjustsTop: false },
+    { id: "e", cursor: "ew-resize", left: "100%", top: "50%", adjustsLeft: false, adjustsTop: false },
+    { id: "sw", cursor: "nesw-resize", left: 0, top: "100%", adjustsLeft: true, adjustsTop: false },
+    { id: "s", cursor: "ns-resize", left: "50%", top: "100%", adjustsLeft: false, adjustsTop: false },
+    { id: "se", cursor: "nwse-resize", left: "100%", top: "100%", adjustsLeft: false, adjustsTop: false },
+  ];
+
+  function startResize(e, handle) {
     if (isLocked || isHidden) return;
     e.stopPropagation();
     e.preventDefault();
     const startClient = { x: e.clientX, y: e.clientY };
-    const startSize = {
-      width: typeof props.width === "number" ? props.width : 160,
-      height: typeof props.height === "number" ? props.height : 80,
-    };
+    const startWidth = typeof props.width === "number" ? props.width : 160;
+    const startHeight = typeof props.height === "number" ? props.height : 80;
     const baseX = props.x || 0;
     const baseY = props.y || 0;
+    const startMinX = baseX;
+    const startMaxX = baseX + startWidth;
+    const startMinY = baseY;
+    const startMaxY = baseY + startHeight;
     const snapContext = measureSnapContext();
     const threshold = SNAP_THRESHOLD / (zoom || 1);
     let latest = null;
@@ -162,29 +178,55 @@ function WidgetHandle({ node, selected, onPropsChange, zoom, children }) {
     function onMove(ev) {
       const dw = (ev.clientX - startClient.x) / (zoom || 1);
       const dh = (ev.clientY - startClient.y) / (zoom || 1);
-      let nextWidth = Math.max(MIN_FREE_SIZE, Math.round(startSize.width + dw));
-      let nextHeight = Math.max(MIN_FREE_SIZE, Math.round(startSize.height + dh));
+      let nextMinX = startMinX, nextMaxX = startMaxX;
+      let nextMinY = startMinY, nextMaxY = startMaxY;
+      if (handle.adjustsLeft) nextMinX = startMinX + dw;
+      else nextMaxX = startMaxX + dw;
+      if (handle.adjustsTop) nextMinY = startMinY + dh;
+      else nextMaxY = startMaxY + dh;
+
+      let nextWidth = nextMaxX - nextMinX;
+      let nextHeight = nextMaxY - nextMinY;
+      if (nextWidth < MIN_FREE_SIZE) {
+        if (handle.adjustsLeft) nextMinX = nextMaxX - MIN_FREE_SIZE;
+        else nextMaxX = nextMinX + MIN_FREE_SIZE;
+        nextWidth = MIN_FREE_SIZE;
+      }
+      if (nextHeight < MIN_FREE_SIZE) {
+        if (handle.adjustsTop) nextMinY = nextMaxY - MIN_FREE_SIZE;
+        else nextMaxY = nextMinY + MIN_FREE_SIZE;
+        nextHeight = MIN_FREE_SIZE;
+      }
+
       let guides = null;
       if (snapContext) {
         const { parentSize, targets } = snapContext;
-        const snapRight = snapAxis([baseX + nextWidth], targets.xs, threshold);
-        const snapBottom = snapAxis([baseY + nextHeight], targets.ys, threshold);
-        if (snapRight !== null) nextWidth = Math.max(MIN_FREE_SIZE, nextWidth + snapRight);
-        if (snapBottom !== null) nextHeight = Math.max(MIN_FREE_SIZE, nextHeight + snapBottom);
+        const snapX = snapAxis(handle.adjustsLeft ? [nextMinX] : [nextMaxX], targets.xs, threshold);
+        const snapY = snapAxis(handle.adjustsTop ? [nextMinY] : [nextMaxY], targets.ys, threshold);
+        if (snapX !== null) {
+          if (handle.adjustsLeft) nextMinX += snapX; else nextMaxX += snapX;
+          nextWidth = Math.max(MIN_FREE_SIZE, nextMaxX - nextMinX);
+          if (handle.adjustsLeft) nextMinX = nextMaxX - nextWidth;
+        }
+        if (snapY !== null) {
+          if (handle.adjustsTop) nextMinY += snapY; else nextMaxY += snapY;
+          nextHeight = Math.max(MIN_FREE_SIZE, nextMaxY - nextMinY);
+          if (handle.adjustsTop) nextMinY = nextMaxY - nextHeight;
+        }
         guides = {
-          xs: alignedGuides([baseX + nextWidth], targets.xs),
-          ys: alignedGuides([baseY + nextHeight], targets.ys),
+          xs: handle.adjustsLeft ? alignedGuides([nextMinX], targets.xs) : alignedGuides([nextMaxX], targets.xs),
+          ys: handle.adjustsTop ? alignedGuides([nextMinY], targets.ys) : alignedGuides([nextMaxY], targets.ys),
           width: parentSize.width,
           height: parentSize.height,
         };
       }
-      latest = { width: nextWidth, height: nextHeight, guides };
+      latest = { x: nextMinX, y: nextMinY, width: nextWidth, height: nextHeight, guides };
       setLive(latest);
     }
     function onUp() {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
-      if (latest) onPropsChange(node.id, { width: latest.width, height: latest.height });
+      if (latest) onPropsChange(node.id, { x: latest.x, y: latest.y, width: latest.width, height: latest.height });
       setLive(null);
     }
     window.addEventListener("mousemove", onMove);
@@ -231,6 +273,7 @@ function WidgetHandle({ node, selected, onPropsChange, zoom, children }) {
       )}
       <div
         ref={wrapperRef}
+        data-node-id={node.id}
         data-widget-handle={node.id}
         style={style}
         onMouseDown={startDrag}
@@ -238,15 +281,29 @@ function WidgetHandle({ node, selected, onPropsChange, zoom, children }) {
       >
         {children}
         {selected && !isLocked && !isHidden && (
-          <div
-            data-resize-handle
-            onMouseDown={(e) => {
-              e.stopPropagation();
-              startResize(e);
-            }}
-            className="absolute -bottom-1 -right-1 w-3 h-3 rounded-sm bg-secondary opacity-100 cursor-nwse-resize z-20"
-            title="Drag to resize"
-          />
+          <>
+            {RESIZE_HANDLES.map((handle) => (
+              <div
+                key={handle.id}
+                data-resize-handle
+                data-handle={handle.id}
+                onMouseDown={(ev) => {
+                  ev.stopPropagation();
+                  startResize(ev, handle);
+                }}
+                className="absolute z-20 bg-secondary cursor-resize"
+                style={{
+                  left: handle.left,
+                  top: handle.top,
+                  transform: "translate(-50%, -50%)",
+                  width: "6px",
+                  height: "6px",
+                  cursor: handle.cursor,
+                }}
+                title="Drag to resize"
+              />
+            ))}
+          </>
         )}
       </div>
     </>
