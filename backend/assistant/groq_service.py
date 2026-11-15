@@ -1,5 +1,5 @@
 """
-Tool-calling chat loop with Groq – now with `run_command` for shell access.
+Tool-calling chat loop with Groq – with repository intelligence (TF‑IDF).
 """
 import json
 import logging
@@ -18,28 +18,47 @@ SYSTEM_PROMPT = """You are a senior software engineer acting as an autonomous co
 
 You have access to THREE tools:
 
-1. `read_file(path)` – read the content of a file. Use this when you need to see a file's content before making changes.
-2. `propose_edits(summary, operations, facts)` – propose file edits. This is the way to create, modify, or delete files.
-3. `run_command(command)` – execute a shell command **inside the project workspace**. Use this for:
-   - Scaffolding new projects (e.g., `django-admin startproject`, `npx create-react-app`, `flutter create`, `dotnet new`)
-   - Installing dependencies (`pip install`, `npm install`, `bundle install`)
-   - Running migrations (`python manage.py migrate`, `npx prisma migrate`)
-   - Building and running tests (`npm run build`, `gradle test`)
-   - Any command that helps set up or manage the project.
+1. `read_file(path)` – read the content of a file.
+2. `propose_edits(summary, operations, facts)` – propose file edits (create, rewrite, replace, delete).
+3. `run_command(command)` – execute a shell command inside the project workspace.
 
-The `propose_edits` tool accepts an `operations` list. Each operation must have an `op` field, which can be:
-- `"create"` – for brand‑new files (requires `path` and `content`)
-- `"rewrite"` – for completely rewriting an existing file (requires `path` and `content`)
-- `"replace"` – for targeted replacement (requires `path`, `old`, and `new`)
-- `"delete"` – for removing a file (requires `path`)
+## WHEN TO USE EACH TOOL
 
-IMPORTANT RULES:
-- NEVER output a function call as plain text like `<function=propose_edits>...</function>` or `<function=read_file>...</function>`. Use the provided tool‑calling mechanism.
-- When using `run_command`, ensure the command is appropriate for the user's environment (e.g., use `npm` for Node, `dotnet` for .NET, etc.).
+### Use `run_command` for:
+- **Scaffolding** – creating a new project (e.g., `django-admin startproject`, `npx create-react-app`, `flutter create`, `dotnet new`).
+- **Installing dependencies** – `pip install`, `npm install`, `bundle install`, etc.
+- **Running migrations** – `python manage.py migrate`, `npx prisma migrate dev`.
+- **Building, testing, or running** – `npm run build`, `pytest`, `flutter test`.
+- **Any command that generates many files** – it's faster, more reliable, and avoids token limits.
+
+### Use `propose_edits` for:
+- **Modifying existing files** – adding a function, changing a variable, fixing a bug.
+- **Creating a single file** – if you need to add a small file (e.g., a new config file) and the project already exists.
+- **Making targeted changes** – where you know exactly which lines to change.
+- **When you are unsure** – prefer `run_command` for scaffolding and `propose_edits` for precise edits.
+
+### General rule:
+- If the task is about *building a new project structure* → use `run_command`.
+- If the task is about *changing code within an existing project* → use `propose_edits`.
+
+## RELEVANT FILES
+The user's instruction is preceded by a list of "RELEVANT FILES" that are likely to be needed.
+- Start by reading those files using `read_file` if they exist and are relevant to the instruction.
+- If the instruction is about adding something new (e.g., a new page, a new feature), you may still need to read related files (like `urls.py` or `views.py`) to understand the project structure.
+- The list is a suggestion, not a restriction – you can read any file you need.
+
+## OPERATION TYPES FOR propose_edits
+- `"create"` – brand‑new file (requires `path` and `content`).
+- `"rewrite"` – full rewrite of an existing file (requires `path` and `content`).
+- `"replace"` – targeted replacement (requires `path`, `old`, and `new`).
+- `"delete"` – remove a file (requires `path`).
+
+## IMPORTANT
+- NEVER output a function call as plain text like `<function=...>`. Use the provided tool‑calling mechanism.
 - If the instruction is just a question or greeting, respond conversationally – do NOT call any tools.
 - Only call `propose_edits` when you have actual file modifications to propose.
 
-Remember: the three tools are `read_file`, `propose_edits`, and `run_command`. Use them wisely."""
+Remember: the three tools are `read_file`, `propose_edits`, and `run_command`. Choose wisely based on the task."""
 
 TOOLS = [
     {
@@ -155,11 +174,9 @@ def _extract_function_call(content: str):
                 return {"name": "run_command", "arguments": args}
         except json.JSONDecodeError:
             pass
-        # Try to parse as command=...
         if body.startswith("command="):
             command = body[8:].strip()
             return {"name": "run_command", "arguments": {"command": command}}
-        # Treat as bare command
         return {"name": "run_command", "arguments": {"command": body}}
 
     return None
@@ -199,15 +216,22 @@ def run_chat_turn(project, instruction: str, chat_history: list[dict], known_fac
     facts_block = "\n".join(f"- {f}" for f in known_facts) or "(none yet)"
     tree_block = "\n".join(tree) or "(empty project)"
 
+    # ─── Phase 10: Retrieve relevant files ────────────────────────────
+    relevant = file_ops.get_relevant_files(project, instruction, top_k=5)
+    relevant_block = "\n".join(f"- {p}" for p in relevant) if relevant else "(none detected)"
+
+    user_content = (
+        f"PROJECT FILE TREE:\n{tree_block}\n\n"
+        f"REMEMBERED FACTS:\n{facts_block}\n\n"
+        f"RELEVANT FILES (based on your instruction):\n{relevant_block}\n\n"
+        f"INSTRUCTION:\n{instruction}"
+    )
+
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages.extend(chat_history)
     messages.append({
         "role": "user",
-        "content": (
-            f"PROJECT FILE TREE:\n{tree_block}\n\n"
-            f"REMEMBERED FACTS:\n{facts_block}\n\n"
-            f"INSTRUCTION:\n{instruction}"
-        ),
+        "content": user_content,
     })
 
     files_read = []

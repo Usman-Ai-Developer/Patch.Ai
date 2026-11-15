@@ -1,39 +1,147 @@
 /* frontend/app/globals.css */
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* ─── Import Google Fonts directly ───────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=JetBrains+Mono:wght@400;450;500&family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap');
+
+/* ─── Global body ────────────────────────────────────────────────── */
 body {
-  background: radial-gradient(circle at 30% 50%, rgba(59,130,246,0.08) 0%, transparent 60%),
-              linear-gradient(145deg, #0a0e14 0%, #111820 100%);
-  color: #e8edf2;
+  background: radial-gradient(circle at center, #07141B 0%, #123C34 100%);
   min-height: 100vh;
+  overflow-x: hidden;
+  font-family: 'Geist', sans-serif;
+  color: #dce5dc; /* on-surface */
 }
 
-/* Keep your custom scrollbar */
+/* ─── Custom scrollbar ───────────────────────────────────────────── */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
+::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.02);
+}
 ::-webkit-scrollbar-thumb {
-  background: #1e2a36;
+  background: #2f3731;
   border-radius: 4px;
 }
+::-webkit-scrollbar-thumb:hover {
+  background: #3c4a40;
+}
 
+/* ─── Selection ──────────────────────────────────────────────────── */
+::selection {
+  background: #64fdb1; /* primary-container */
+  color: #007348; /* on-primary-container */
+}
+
+/* ─── Atmospheric layers ────────────────────────────────────────── */
+.atmospheric-glow {
+  position: fixed;
+  width: 600px;
+  height: 600px;
+  background: radial-gradient(circle, rgba(78, 223, 145, 0.08) 0%, transparent 70%);
+  filter: blur(80px);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.grid-overlay {
+  position: fixed;
+  inset: 0;
+  background-image: radial-gradient(rgba(255,255,255,0.02) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.curved-line {
+  position: fixed;
+  border: 1px solid rgba(255,255,255,0.05);
+  border-radius: 100%;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ─── Glassmorphism cards ───────────────────────────────────────── */
+.glass-card {
+  background: rgba(7, 15, 25, 0.92);
+  backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 0 40px 120px rgba(0, 0, 0, 0.55);
+}
+
+.feature-card {
+  background: linear-gradient(180deg, rgba(22, 35, 50, 0.95), rgba(11, 19, 30, 0.98));
+  border: 1px solid rgba(102, 255, 179, 0.12);
+  transition: all 0.4s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.feature-card:hover {
+  transform: translateY(-8px) scale(1.02);
+  border-color: rgba(102, 255, 179, 0.4);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4), 0 0 20px rgba(78, 223, 145, 0.1);
+}
+
+/* ─── Glass header ──────────────────────────────────────────────── */
+.glass-header {
+  background: rgba(14, 21, 16, 0.7);
+  backdrop-filter: blur(20px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* ─── Logo cloud ────────────────────────────────────────────────── */
+.logo-cloud img {
+  filter: grayscale(1) brightness(2);
+  opacity: 0.6;
+  transition: all 0.3s ease;
+}
+.logo-cloud img:hover {
+  filter: grayscale(0) brightness(1);
+  opacity: 1;
+}
+
+/* ─── AI Pulse animation ───────────────────────────────────────── */
+@keyframes pulse-ai {
+  0% { transform: scale(1); opacity: 0.5; }
+  50% { transform: scale(1.2); opacity: 0.8; }
+  100% { transform: scale(1); opacity: 0.5; }
+}
+.ai-pulse {
+  animation: pulse-ai 3s infinite ease-in-out;
+}
+
+/* ─── Material Symbols ──────────────────────────────────────────── */
+/* Force the font family and correct display */
+.material-symbols-outlined {
+  font-family: 'Material Symbols Outlined', 'Material Icons', sans-serif;
+  font-weight: normal;
+  font-style: normal;
+  font-size: 20px;
+  display: inline-block;
+  line-height: 1;
+  text-transform: none;
+  letter-spacing: normal;
+  word-wrap: normal;
+  white-space: nowrap;
+  direction: ltr;
+  font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 24;
+  overflow: hidden;
+  text-overflow: clip;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+}
+
+/* ─── Blink cursor (optional) ──────────────────────────────────── */
 .blink-cursor::after {
   content: "▍";
   animation: blink 1s step-start infinite;
-  color: #3b82f6; /* brand blue */
+  color: #4edf91;
 }
 @keyframes blink {
   50% { opacity: 0; }
-}
-
-/* Optional: a glowing text effect for headings */
-.glow-text {
-  background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
 }

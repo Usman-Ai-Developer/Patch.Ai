@@ -197,7 +197,38 @@ Authentication is required for most endpoints.
 | `/api/projects/<uuid>/sync/` | POST | Sync uploaded zip |
 | `/api/projects/<uuid>/chat/` | POST | Send instruction |
 | `/api/projects/<uuid>/chat/history/` | GET | Retrieve chat history |
+| `/api/projects/<uuid>/builder/render-code/` | POST | Render a widget tree to `.jsx` (no file written) |
 
+
+---
+
+## 🎨 Visual Builder
+
+`/project/<id>/visual-builder` is a no-code canvas that compiles to real code.
+
+- **Design** – drag widgets from the palette, nest them, free-position inside a
+  Frame, resize with snap-to-guides, align/distribute/group, reorder layers.
+- **Edit text in place** – double-click a Text/Heading/Button and type; Enter
+  commits, Escape cancels.
+- **Reusable components** – turn any selection into a component with the
+  **Component** button, then drag instances from the palette's Components
+  section. **Double-click an instance** to edit its master (every instance
+  updates); **Detach** turns one back into editable widgets.
+- **Instance properties & variants** – in master mode, **Expose** a text/image
+  as a property and **Variant** to fork the layout; each instance then picks a
+  variant and overrides its exposed properties without touching the master.
+- **See the code** – the **Code** button opens a live panel showing the exact
+  `.jsx` file that generation will write (copy, download, or regenerate).
+- **Breakpoints** – preview the canvas at desktop, tablet (768 px) and mobile
+  (390 px) widths.
+- **Autosave** – the layout is persisted 2.5 s after you stop editing.
+- **Generate** – **Save & Generate Code** writes the React component into the
+  project workspace, embedding the design tree so the canvas can detect drift.
+
+Shortcuts: `⌘/Ctrl+Z` undo, `⌘/Ctrl+Shift+Z` redo, `⌘/Ctrl+C/V` copy/paste,
+`⌘/Ctrl+D` duplicate, double-click to edit text, arrows nudge (Shift = 10 px) or
+reorder, `Delete` removes the selection, `⌘/Ctrl+0` reset zoom,
+`⌘/Ctrl+=`/`-` zoom.
 
 ---
 

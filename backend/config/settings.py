@@ -1,8 +1,8 @@
 import os
-import sys
 from pathlib import Path
 from dotenv import load_dotenv
 import dj_database_url
+from datetime import timedelta
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -16,7 +16,6 @@ load_dotenv(BASE_DIR / ".env")
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-change-me")
 DEBUG = os.environ.get("DEBUG", "False") == "True"
 
-# ALLOWED_HOSTS – parse from env or default to localhost
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 
 # ---------------------------------------------------------------------
@@ -30,15 +29,19 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
 
-    # Third-party apps
+    # Third-party
     "rest_framework",
     "rest_framework_simplejwt",
+    "rest_framework_simplejwt.token_blacklist",  # for logout
     "corsheaders",
-    "channels",           # for WebSockets
-    "django_filters",     # optional
+    "channels",
+    "django_filters",
 
     # Local apps
-    "assistant",          # your existing app
+    "assistant",
+    "terminal",
+    "preview",
+    "builder",
 ]
 
 MIDDLEWARE = [
@@ -71,10 +74,10 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = "config.wsgi.application"
-ASGI_APPLICATION = "config.asgi.application"  # for channels
+ASGI_APPLICATION = "config.asgi.application"
 
 # ---------------------------------------------------------------------
-# Database – Supports SQLite (local) and PostgreSQL (Docker)
+# Database – SQLite (default) or PostgreSQL via DATABASE_URL
 # ---------------------------------------------------------------------
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if DATABASE_URL:
@@ -86,19 +89,18 @@ else:
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
             "NAME": BASE_DIR / "db.sqlite3",
+            "OPTIONS": {
+                "timeout": 30,  # increased timeout for locks
+            },
         }
     }
 
 # ---------------------------------------------------------------------
-# Redis / Channels (for WebSockets and caching)
+# Channels & WebSocket
 # ---------------------------------------------------------------------
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 CHANNEL_LAYERS = {
     "default": {
-        "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {
-            "hosts": [REDIS_URL],
-        },
+        "BACKEND": "channels.layers.InMemoryChannelLayer",
     },
 }
 
@@ -126,17 +128,25 @@ MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # ---------------------------------------------------------------------
-# CORS – read from environment, fallback to localhost:3000
+# CORS
 # ---------------------------------------------------------------------
-cors_origins = os.environ.get("CORS_ALLOWED_ORIGINS", "http://localhost:3000")
-CORS_ALLOWED_ORIGINS = [origin.strip() for origin in cors_origins.split(",") if origin.strip()]
-CORS_ALLOW_ALL_ORIGINS = not CORS_ALLOWED_ORIGINS  # fallback
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+CORS_ALLOW_CREDENTIALS = True
 
 # ---------------------------------------------------------------------
 # Security (production)
 # ---------------------------------------------------------------------
 if not DEBUG:
-    SECURE_SSL_REDIRECT = True
+    # Only force HTTPS redirects when explicitly enabled (e.g. once the
+    # deployment sits behind a proxy that terminates TLS and sets
+    # X-Forwarded-Proto correctly). Defaulting this to True broke every
+    # request with a 301 redirect whenever DEBUG was False, including the
+    # test suite, since Django's test client and many local/staging
+    # setups talk plain HTTP.
+    SECURE_SSL_REDIRECT = os.environ.get("SECURE_SSL_REDIRECT", "False") == "True"
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
     SECURE_HSTS_SECONDS = 31536000
@@ -163,7 +173,6 @@ REST_FRAMEWORK = {
     "PAGE_SIZE": 10,
 }
 
-from datetime import timedelta
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
@@ -172,15 +181,14 @@ SIMPLE_JWT = {
 }
 
 # ---------------------------------------------------------------------
-# Project‑specific (patch/ code assistant)
+# Project‑specific
 # ---------------------------------------------------------------------
 PROJECTS_ROOT = BASE_DIR / "project_workspaces"
 os.makedirs(PROJECTS_ROOT, exist_ok=True)
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")  # faster & more tokens
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
 
-# Safety limits
 MAX_FILES_PER_PROJECT = 400
 MAX_FILE_BYTES = 300_000
 ALLOWED_TEXT_EXTENSIONS = {
@@ -190,7 +198,7 @@ ALLOWED_TEXT_EXTENSIONS = {
 }
 
 # ---------------------------------------------------------------------
-# Logging (optional)
+# Logging
 # ---------------------------------------------------------------------
 LOGGING = {
     "version": 1,
@@ -205,3 +213,13 @@ LOGGING = {
         "level": "INFO",
     },
 }
+
+# ─── WAL mode activation (runs on connection) ──────────────────────
+def enable_wal_mode(sender, connection, **kwargs):
+    if connection.vendor == 'sqlite':
+        with connection.cursor() as cursor:
+            cursor.execute('PRAGMA journal_mode=WAL;')
+            cursor.execute('PRAGMA synchronous=NORMAL;')
+
+from django.db.backends.signals import connection_created
+connection_created.connect(enable_wal_mode)

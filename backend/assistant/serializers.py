@@ -11,7 +11,7 @@ class ProjectFileSerializer(serializers.ModelSerializer):
 class ChatMessageSerializer(serializers.ModelSerializer):
     class Meta:
         model = ChatMessage
-        fields = ["id", "role", "content", "file_ops", "created_at"]
+        fields = ["id", "role", "content", "file_ops", "status", "created_at"]
 
 
 class ProjectSerializer(serializers.ModelSerializer):

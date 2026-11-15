@@ -1,7 +1,6 @@
-// frontend/tailwind.config.js
-
 /** @type {import('tailwindcss').Config} */
 module.exports = {
+  darkMode: "class",
   content: [
     "./app/**/*.{js,jsx}",
     "./components/**/*.{js,jsx}",
@@ -9,29 +8,100 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        ink: "#0a0e14",          // darkest background
-        panel: "#111820",        // panels, cards
-        line: "#1e2a36",         // borders
-        text: "#e8edf2",         // primary text
-        subtext: "#8899aa",      // secondary text
-        // New accent gradient colours
-        brand: {
-          100: "#3b82f6",        // blue
-          200: "#6366f1",        // indigo
-          300: "#8b5cf6",        // purple
-        },
-        // Keep the old amber as a fallback (optional)
-        amber: "#e8a33d",
-        mint: "#7fd9a8",
+        // ─── Surface ────────────────────────────────────────────
+        surface: "#0e1510",
+        "surface-dim": "#0e1510",
+        "surface-bright": "#333b35",
+        "surface-container-lowest": "#08100b",
+        "surface-container-low": "#161d18",
+        "surface-container": "#1a211c",
+        "surface-container-high": "#242c26",
+        "surface-container-highest": "#2f3731",
+        "on-surface": "#dce5dc",
+        "on-surface-variant": "#bbcabe",
+        "inverse-surface": "#dce5dc",
+        "inverse-on-surface": "#2a322d",
+        outline: "#859489",
+        "outline-variant": "#3c4a40",
+        "surface-tint": "#41e097",
+        // ─── Primary (white) ────────────────────────────────────
+        primary: "#ffffff",
+        "on-primary": "#003921",
+        "primary-container": "#64fdb1",
+        "on-primary-container": "#007348",
+        "inverse-primary": "#006d44",
+        "primary-fixed": "#64fdb1",
+        "primary-fixed-dim": "#41e097",
+        "on-primary-fixed": "#002111",
+        "on-primary-fixed-variant": "#005232",
+        // ─── Secondary (brand green) ────────────────────────────
+        secondary: "#4edf91",
+        "on-secondary": "#00391e",
+        "secondary-container": "#00b56b",
+        "on-secondary-container": "#003e21",
+        "secondary-fixed": "#6efdab",
+        "secondary-fixed-dim": "#4edf91",
+        "on-secondary-fixed": "#00210f",
+        "on-secondary-fixed-variant": "#00522e",
+        // ─── Tertiary ────────────────────────────────────────────
+        tertiary: "#ffffff",
+        "on-tertiary": "#003915",
+        "tertiary-container": "#6bff8f",
+        "on-tertiary-container": "#007432",
+        "tertiary-fixed": "#6bff8f",
+        "tertiary-fixed-dim": "#4ae176",
+        "on-tertiary-fixed": "#002109",
+        "on-tertiary-fixed-variant": "#005321",
+        // ─── Error ──────────────────────────────────────────────
+        error: "#ffb4ab",
+        "on-error": "#690005",
+        "error-container": "#93000a",
+        "on-error-container": "#ffdad6",
+        // ─── Background ──────────────────────────────────────────
+        background: "#0e1510",
+        "on-background": "#dce5dc",
+        "surface-variant": "#2f3731",
       },
-      backgroundImage: {
-        'gradient-radial': 'radial-gradient(circle at 30% 50%, rgba(59,130,246,0.15) 0%, transparent 60%)',
-        'gradient-brand': 'linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%)',
-        'gradient-brand-hover': 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)',
-        'gradient-dark': 'linear-gradient(145deg, #0a0e14 0%, #111820 100%)',
+      borderRadius: {
+        sm: "0.125rem",
+        DEFAULT: "0.25rem",
+        lg: "0.5rem",
+        xl: "0.75rem",
+        "2xl": "1rem",
+        "3xl": "1.5rem",
+        full: "9999px",
+      },
+      spacing: {
+        xs: "4px",
+        sm: "8px",
+        md: "16px",
+        lg: "24px",
+        xl: "32px",
+        "2xl": "48px",
+        "3xl": "64px",
+        gutter: "24px",
+        margin: "32px",
+        unit: "4px",
       },
       fontFamily: {
-        mono: ['JetBrains Mono', 'Menlo', 'monospace'],
+        "body-lg": ["Geist", "sans-serif"],
+        "body-md": ["Geist", "sans-serif"],
+        "display-lg": ["Geist", "sans-serif"],
+        "display-sm": ["Geist", "sans-serif"],
+        "headline-lg": ["Geist", "sans-serif"],
+        "headline-lg-mobile": ["Geist", "sans-serif"],
+        "label-caps": ["Geist", "sans-serif"],
+        "code-md": ["JetBrains Mono", "monospace"],
+      },
+      fontSize: {
+        "display-lg": ["48px", { lineHeight: "1.1", letterSpacing: "-0.04em", fontWeight: "800" }],
+        "display-sm": ["32px", { lineHeight: "1.2", letterSpacing: "-0.03em", fontWeight: "700" }],
+        "headline-lg": ["24px", { lineHeight: "1.3", letterSpacing: "-0.02em", fontWeight: "600" }],
+        "headline-lg-mobile": ["20px", { lineHeight: "1.3", letterSpacing: "-0.02em", fontWeight: "600" }],
+        "body-lg": ["16px", { lineHeight: "1.6", letterSpacing: "0em", fontWeight: "400" }],
+        "body-md": ["14px", { lineHeight: "1.5", letterSpacing: "0em", fontWeight: "400" }],
+        "code-md": ["14px", { lineHeight: "1.6", letterSpacing: "0em", fontWeight: "450" }],
+        "label-caps": ["12px", { lineHeight: "1", letterSpacing: "0.08em", fontWeight: "600" }],
       },
     },
   },

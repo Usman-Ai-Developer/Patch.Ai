@@ -64,9 +64,10 @@ def test_process_instruction_with_failed_ops(mock_run_chat_turn):
     result = process_instruction(project, "update", [])
     assert "message" in result
     msg = result["message"]
-    # The summary should include the failure note
+    # The summary should now include the failure note
     assert "could not be applied" in msg["content"]
     assert result["failed_ops"] is not None
+    assert len(result["failed_ops"]) > 0
 
 @pytest.mark.django_db
 @patch("assistant.chat_service.groq_service.run_chat_turn")

@@ -1,0 +1,9 @@
+{
+  "name": "js-validate",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Standalone syntax checker used by apply_patch_operations before it writes JS/JSX/TS/TSX files to a project workspace.",
+  "dependencies": {
+    "esbuild": "^0.21.5"
+  }
+}

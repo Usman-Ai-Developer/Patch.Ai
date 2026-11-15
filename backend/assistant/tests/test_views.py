@@ -166,3 +166,47 @@ class TestProjectViews:
             response = self.client.post(url, {"message": "test"}, format="json")
             assert response.status_code == 200
             assert "message" in response.json()
+
+    def test_apply_rolls_back_when_one_operation_fails(self):
+        """A patch set is all-or-nothing: a later failure must not leave the
+        earlier writes on disk, and the message must stay retryable."""
+        project = ProjectFactory(owner=self.user)
+        workspace = project_dir(project)
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / "keep.txt").write_text("original")
+        ProjectFile.objects.create(project=project, path="keep.txt", size_bytes=8)
+        msg = ChatMessage.objects.create(
+            project=project,
+            role="assistant",
+            content="two operations",
+            status="pending",
+            file_ops=[
+                {"op": "rewrite", "path": "keep.txt", "content": "changed"},
+                {"op": "replace", "path": "missing.txt", "old": "a", "new": "b"},
+            ],
+        )
+        url = reverse("apply-operations", kwargs={"project_id": project.id})
+        response = self.client.post(url, {"message_id": msg.id}, format="json")
+
+        assert response.status_code == 400
+        assert response.json()["rolled_back"] is True
+        assert (workspace / "keep.txt").read_text() == "original"
+        msg.refresh_from_db()
+        assert msg.status == "pending"
+
+    def test_delete_directory_keeps_sibling_with_shared_prefix(self):
+        project = ProjectFactory(owner=self.user)
+        workspace = project_dir(project)
+        (workspace / "app").mkdir(parents=True, exist_ok=True)
+        (workspace / "app" / "models.py").write_text("x")
+        (workspace / "app2").mkdir(parents=True, exist_ok=True)
+        (workspace / "app2" / "models.py").write_text("y")
+        ProjectFile.objects.create(project=project, path="app/models.py", size_bytes=1)
+        ProjectFile.objects.create(project=project, path="app2/models.py", size_bytes=1)
+
+        url = reverse("directory-delete", kwargs={"project_id": project.id})
+        response = self.client.delete(f"{url}?path=app")
+
+        assert response.status_code == 204
+        assert not (workspace / "app").exists()
+        assert ProjectFile.objects.filter(project=project, path="app2/models.py").exists()

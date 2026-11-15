@@ -1,0 +1,21 @@
+{
+  "//": "Shared fixture for pluralize() parity between backend/builder/services/helpers.py and frontend/components/visualbuilder/apiUtils.js. Each case is [input, expected]. Real call sites always pass an already-lowercased model name, so `input` here is pre-lowercased too — that's the actual contract, not raw-casing behavior.",
+  "cases": [
+    ["post", "posts"],
+    ["category", "categories"],
+    ["day", "days"],
+    ["key", "keys"],
+    ["bus", "buses"],
+    ["box", "boxes"],
+    ["quiz", "quizes"],
+    ["church", "churches"],
+    ["wish", "wishes"],
+    ["city", "cities"],
+    ["toy", "toys"],
+    ["user", "users"],
+    ["address", "addresses"],
+    ["a", "as"],
+    ["y", "ys"],
+    ["", ""]
+  ]
+}

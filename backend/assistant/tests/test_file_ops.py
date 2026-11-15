@@ -78,6 +78,22 @@ def test_extract_zip_to_workspace():
 
 
 @pytest.mark.django_db
+def test_extract_zip_normalises_windows_separators():
+    """Archives built on Windows can contain backslash separators; the paths
+    we record must still be POSIX so ?path=a/b.txt lookups work."""
+    project = ProjectFactory()
+    zip_buffer = BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as zf:
+        zf.writestr("win\\nested\\file.txt", "content")
+    zip_buffer.seek(0)
+
+    written = extract_zip_to_workspace(project, zip_buffer)
+
+    assert written == ["win/nested/file.txt"]
+    assert read_single_file(project, "win/nested/file.txt") == "content"
+
+
+@pytest.mark.django_db
 def test_sync_project_files_table():
     project = ProjectFactory()
     workspace = project_dir(project)

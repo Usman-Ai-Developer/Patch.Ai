@@ -1,15 +1,15 @@
-// frontend/app/project/[id]/page.js
-
 "use client";
 
 import { useState, useCallback, useEffect, useRef } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import toast from "react-hot-toast";
-import Sidebar from "../../../components/Sidebar";
-import FileTree from "../../../components/FileTree";
-import CodeViewer from "../../../components/CodeViewer";
-import ChatPanel from "../../../components/ChatPanel";
+import WorkspaceHeader from "../../../components/WorkspaceHeader";
+import WorkspacePanels from "../../../components/WorkspacePanels";
+import TerminalPanel from "../../../components/TerminalPanel";
+import BuilderPanel from "../../../components/BuilderPanel";
 import { SkeletonWorkspace } from "../../../components/Skeleton";
+import { isAuthenticated } from "../../../lib/auth";
+import { useConfirm } from "../../../hooks/useConfirm";
 import {
   getProject,
   listProjects,
@@ -22,13 +22,21 @@ import {
   downloadProject,
   downloadFile,
   deleteProject,
+  startPreview,
+  getPreviewStatus,
+  stopPreview,
+  refreshFileTree,
+  getBlueprint,
+  updateBlueprint,
 } from "../../../lib/api";
-import { isAuthenticated } from "../../../lib/auth";
 
 export default function ProjectWorkspace() {
   const { id: projectId } = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const { confirm, ConfirmDialog } = useConfirm();
 
+  // ---------- State ----------
   const [loading, setLoading] = useState(true);
   const [projectName, setProjectName] = useState("");
   const [files, setFiles] = useState([]);
@@ -41,13 +49,22 @@ export default function ProjectWorkspace() {
   const [recentPaths, setRecentPaths] = useState(new Set());
   const [syncing, setSyncing] = useState(false);
   const syncInputRef = useRef(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  // ─── Collapsed by default ──────────────────────────────────────────
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
+  const [chatCollapsed, setChatCollapsed] = useState(true);
+
   const [projects, setProjects] = useState([]);
   const [scrollToIndex, setScrollToIndex] = useState(null);
   const [isRenaming, setIsRenaming] = useState(false);
   const [newName, setNewName] = useState("");
+  const [showTerminal, setShowTerminal] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [syncingFiles, setSyncingFiles] = useState(false);
+  const [previewRunning, setPreviewRunning] = useState(false);
+  const [showBuilder, setShowBuilder] = useState(false);
 
-  // ----- Auth & data loading -----
+  // ---------- Auth & Data Loading ----------
   useEffect(() => {
     if (!isAuthenticated()) {
       router.push("/login");
@@ -71,16 +88,36 @@ export default function ProjectWorkspace() {
         setProjects(allProjects.filter((p) => p.id !== projectId));
         setActivePath(null);
         setFileContent("");
+
+        if (searchParams.get('openBuilder') === 'true') {
+          setShowBuilder(true);
+          router.replace(`/project/${projectId}`);
+        }
       } catch (e) {
         toast.error("Failed to load workspace");
-        router.push("/");
+        router.push("/dashboard");
       } finally {
         setLoading(false);
       }
     })();
-  }, [projectId, router]);
+  }, [projectId, router, searchParams]);
 
-  // ----- File selection -----
+  // ---------- Refresh workspace ----------
+  const refreshWorkspace = useCallback(async () => {
+    try {
+      const [tree, history] = await Promise.all([
+        getFileTree(projectId),
+        getChatHistory(projectId),
+      ]);
+      setFiles(tree);
+      setMessages(history.messages);
+      setFacts(history.facts || []);
+    } catch (e) {
+      toast.error("Failed to refresh workspace");
+    }
+  }, [projectId]);
+
+  // ---------- File selection ----------
   const selectFile = useCallback(
     async (path) => {
       setActivePath(path);
@@ -98,29 +135,50 @@ export default function ProjectWorkspace() {
     [projectId]
   );
 
-  // ----- Chat -----
+  // ---------- Close file ----------
+  const closeFile = useCallback(() => {
+    setActivePath(null);
+    setFileContent("");
+  }, []);
+
+  // ---------- Chat ----------
   async function handleSend(text) {
     setMessages((prev) => [...prev, { role: "user", content: text }]);
     setBusy(true);
     try {
       const res = await sendChatMessage(projectId, text);
-      setMessages((prev) => [...prev, res.message]);
-      setFiles(res.files);
+
+      const assistantMessage = {
+        ...res.message,
+        diffs: res.diffs || [],
+        pending_ops: res.pending_ops || [],
+        status: res.message.status || "pending",
+      };
+
+      setMessages((prev) => [...prev, assistantMessage]);
+
+      if (res.files) setFiles(res.files);
+
       const touched = new Set((res.message.file_ops || []).map((o) => o.path));
       setRecentPaths(touched);
       if (activePath && touched.has(activePath)) selectFile(activePath);
+
       const history = await getChatHistory(projectId);
       setFacts(history.facts || []);
-      toast.success("AI responded");
+
+      toast.success("Response received – review changes");
     } catch (e) {
       toast.error(`Chat error: ${e.message}`);
-      setMessages((prev) => [...prev, { role: "assistant", content: `Error: ${e.message}`, file_ops: [] }]);
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: `Error: ${e.message}`, file_ops: [], status: "failed" },
+      ]);
     } finally {
       setBusy(false);
     }
   }
 
-  // ----- Sync -----
+  // ---------- Sync .zip ----------
   async function handleSyncFile(file) {
     if (!file || !file.name.endsWith(".zip")) {
       toast.error("Please choose a .zip to sync.");
@@ -138,7 +196,7 @@ export default function ProjectWorkspace() {
     }
   }
 
-  // ----- Rename -----
+  // ---------- Rename ----------
   async function handleRename(e) {
     e.preventDefault();
     const trimmed = newName.trim();
@@ -147,8 +205,24 @@ export default function ProjectWorkspace() {
       return;
     }
     try {
+      // 1. Update the project name in the database
       const updated = await updateProject(projectId, trimmed);
       setProjectName(updated.name);
+
+      // 2. Also update the blueprint's project_name to keep it in sync
+      try {
+        const blueprint = await getBlueprint(projectId);
+        if (blueprint) {
+          await updateBlueprint(projectId, {
+            ...blueprint.data,
+            project_name: trimmed,
+          });
+        }
+      } catch (blueprintErr) {
+        // Silently fail – blueprint may not exist yet
+        console.debug("Blueprint not found or update failed:", blueprintErr);
+      }
+
       setIsRenaming(false);
       toast.success("Project renamed");
     } catch (err) {
@@ -156,31 +230,46 @@ export default function ProjectWorkspace() {
     }
   }
 
-  // ----- Download -----
-  function handleDownloadProject() {
-    downloadProject(projectId);
-    toast.success("Download started");
+  // ---------- Download ----------
+  async function handleDownloadProject() {
+    try {
+      await downloadProject(projectId, projectName);
+      toast.success("Download started");
+    } catch (e) {
+      toast.error(e.message || "Failed to download project");
+    }
   }
 
-  function handleDownloadCurrentFile() {
+  async function handleDownloadCurrentFile() {
     if (!activePath) return;
-    downloadFile(projectId, activePath);
-    toast.success("Download started");
+    try {
+      await downloadFile(projectId, activePath);
+      toast.success("Download started");
+    } catch (e) {
+      toast.error(e.message || "Failed to download file");
+    }
   }
 
-  // ----- Delete project -----
+  // ---------- Delete project ----------
   async function handleDeleteProject() {
-    if (!confirm(`Delete "${projectName}" and all its files? This cannot be undone.`)) return;
+    const confirmed = await confirm({
+      title: `Delete "${projectName}"?`,
+      message: "All files and data associated with this project will be permanently removed. This cannot be undone.",
+      confirmText: "Delete Project",
+      variant: "danger",
+    });
+    if (!confirmed) return;
+
     try {
       await deleteProject(projectId);
       toast.success("Project deleted");
-      router.push("/");
+      router.push("/dashboard");
     } catch (err) {
       toast.error(`Failed to delete project: ${err.message}`);
     }
   }
 
-  // ----- File deleted callback -----
+  // ---------- File deleted callback ----------
   function handleFileDeleted(deletedPath) {
     setFiles((prev) => prev.filter((f) => f.path !== deletedPath));
     if (activePath === deletedPath) {
@@ -189,134 +278,162 @@ export default function ProjectWorkspace() {
     }
   }
 
-  // ----- Prepare user messages for sidebar -----
+  // ---------- Preview Toggle ----------
+  async function handlePreviewToggle() {
+    if (previewRunning) {
+      setPreviewLoading(true);
+      try {
+        await stopPreview(projectId);
+        setPreviewRunning(false);
+        toast.success("Preview stopped");
+      } catch (e) {
+        toast.error(e.message || "Failed to stop preview");
+      } finally {
+        setPreviewLoading(false);
+      }
+    } else {
+      setPreviewLoading(true);
+      try {
+        const data = await startPreview(projectId);
+        setPreviewRunning(true);
+        const urls = (data.urls && data.urls.length ? data.urls : [data.url]).filter(Boolean);
+        urls.forEach((url) => window.open(url, "_blank"));
+        if (urls.length > 1) {
+          toast.success(`Opened ${urls.length} servers in new tabs`);
+        } else {
+          toast.success("Preview opened in new tab");
+        }
+      } catch (e) {
+        toast.error(e.message || "Failed to start preview");
+      } finally {
+        setPreviewLoading(false);
+      }
+    }
+  }
+
+  // ---------- Sync Files (Refresh File Tree) ----------
+  async function handleSyncFiles() {
+    setSyncingFiles(true);
+    try {
+      const data = await refreshFileTree(projectId);
+      setFiles(data);
+      toast.success("File tree refreshed");
+    } catch (e) {
+      toast.error(e.message || "Failed to refresh file tree");
+    } finally {
+      setSyncingFiles(false);
+    }
+  }
+
+  // ---------- User messages for sidebar ----------
   const userMessages = messages
     .map((m, index) => ({ ...m, index }))
     .filter((m) => m.role === "user");
 
-  // ----- Loading state -----
+  // ---------- Check preview status on mount ----------
+  useEffect(() => {
+    if (!projectId) return;
+    getPreviewStatus(projectId)
+      .then((data) => setPreviewRunning(data.running))
+      .catch(() => setPreviewRunning(false));
+  }, [projectId]);
+
+  // ---------- Loading ----------
   if (loading) {
     return <SkeletonWorkspace />;
   }
 
-  // ----- Render -----
+  // ---------- Render ----------
   return (
-    <div className="h-screen flex flex-col">
-      {/* Header */}
-      <div className="border-b border-line px-4 py-2 flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <button onClick={() => router.push("/")} className="flex items-center gap-2">
-            <img src="/logo.png" alt="patch/" className="h-6 w-auto" />
-            <span className="text-brand-100 text-sm font-semibold">patch/</span>
-          </button>
-          {isRenaming ? (
-            <form onSubmit={handleRename} className="flex items-center gap-2">
-              <input
-                type="text"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                autoFocus
-                className="bg-panel border border-line rounded-sm px-2 py-1 text-xs text-text outline-none focus:border-brand-100"
-              />
-              <button type="submit" className="text-xs text-brand-100 hover:text-brand-300 transition-colors">
-                save
-              </button>
-              <button
-                type="button"
-                onClick={() => { setIsRenaming(false); setNewName(projectName); }}
-                className="text-xs text-subtext hover:text-text transition-colors"
-              >
-                cancel
-              </button>
-            </form>
-          ) : (
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-subtext truncate max-w-xs">{projectName}</span>
-              <button
-                onClick={() => setIsRenaming(true)}
-                className="text-subtext hover:text-brand-100 text-xs transition-colors"
-                title="Rename project"
-              >
-                ✎
-              </button>
-              <button
-                onClick={handleDeleteProject}
-                className="text-subtext hover:text-red-400 text-xs transition-colors"
-                title="Delete project"
-              >
-                ✕
-              </button>
-            </div>
-          )}
-        </div>
-        <div className="flex items-center gap-3">
-          <button
-            onClick={handleDownloadProject}
-            className="text-xs text-subtext border border-line rounded-sm px-3 py-1.5 hover:border-brand-200 hover:text-brand-100 transition-all"
-            title="Download entire project as ZIP"
-          >
-            ⬇ project
-          </button>
-          {activePath && (
-            <button
-              onClick={handleDownloadCurrentFile}
-              className="text-xs text-subtext border border-line rounded-sm px-3 py-1.5 hover:border-brand-200 hover:text-brand-100 transition-all"
-              title="Download current file"
-            >
-              ⬇ file
-            </button>
-          )}
-          <input
-            ref={syncInputRef}
-            type="file"
-            accept=".zip"
-            className="hidden"
-            onChange={(e) => handleSyncFile(e.target.files[0])}
-          />
-          <button
-            onClick={() => syncInputRef.current?.click()}
-            disabled={syncing}
-            className="text-xs text-subtext border border-line rounded-sm px-3 py-1.5 hover:border-brand-200 hover:text-brand-100 transition-all disabled:opacity-40"
-          >
-            {syncing ? "syncing…" : "sync .zip"}
-          </button>
-        </div>
-      </div>
+    <div className="landing-body text-on-surface selection:bg-primary-container selection:text-on-primary-container relative min-h-screen">
+      {ConfirmDialog}
 
-      {/* Main workspace */}
-      <div className="flex-1 flex min-h-0">
-        <Sidebar
-          collapsed={sidebarCollapsed}
-          onToggle={() => setSidebarCollapsed((c) => !c)}
+      {/* Background Elements */}
+      <div className="grid-overlay"></div>
+      <div className="atmospheric-glow top-0 -left-64"></div>
+      <div className="atmospheric-glow bottom-0 -right-64"></div>
+      <div className="curved-line w-[1000px] h-[1000px] -top-1/2 -left-1/4"></div>
+      <div className="curved-line w-[800px] h-[800px] -bottom-1/4 -right-1/4"></div>
+
+      <div className="h-screen flex flex-col relative z-10">
+        <WorkspaceHeader
+          projectName={projectName}
+          isRenaming={isRenaming}
+          newName={newName}
+          setNewName={setNewName}
+          handleRename={handleRename}
+          setIsRenaming={setIsRenaming}
+          handleDeleteProject={handleDeleteProject}
+          activePath={activePath}
+          handleDownloadProject={handleDownloadProject}
+          handleDownloadCurrentFile={handleDownloadCurrentFile}
+          syncInputRef={syncInputRef}
+          handleSyncFile={handleSyncFile}
+          syncing={syncing}
+          syncingFiles={syncingFiles}
+          handleSyncFiles={handleSyncFiles}
+          showTerminal={showTerminal}
+          setShowTerminal={setShowTerminal}
+          chatCollapsed={chatCollapsed}
+          setChatCollapsed={setChatCollapsed}
+          previewRunning={previewRunning}
+          previewLoading={previewLoading}
+          handlePreviewToggle={handlePreviewToggle}
+          showBuilder={showBuilder}
+          setShowBuilder={setShowBuilder}
+        />
+
+        {/* Main workspace (three panels) */}
+        <WorkspacePanels
+          sidebarCollapsed={sidebarCollapsed}
+          setSidebarCollapsed={setSidebarCollapsed}
           projects={projects}
           currentProjectId={projectId}
           onSelectProject={(id) => router.push(`/project/${id}`)}
-          onNewProject={() => router.push("/?new=1")}
+          onNewProject={() => router.push("/dashboard")}
           userMessages={userMessages}
           onJumpToMessage={setScrollToIndex}
+          files={files}
+          onSelectFile={selectFile}
+          activePath={activePath}
+          recentPaths={recentPaths}
+          projectId={projectId}
+          onFileDeleted={handleFileDeleted}
+          fileContent={fileContent}
+          fileLoading={fileLoading}
+          messages={messages}
+          onSend={handleSend}
+          busy={busy}
+          facts={facts}
+          scrollToIndex={scrollToIndex}
+          onMessageStatusChange={refreshWorkspace}
+          chatCollapsed={chatCollapsed}
+          setChatCollapsed={setChatCollapsed}
+          showTerminal={showTerminal}
+          onCloseTerminal={() => setShowTerminal(false)}
+          onCloseFile={closeFile}
         />
-        <div className="w-[220px] border-r border-line overflow-y-auto py-2 shrink-0">
-          <FileTree
-            files={files}
-            onSelect={selectFile}
-            activePath={activePath}
-            recentPaths={recentPaths}
-            projectId={projectId}
-            onFileDeleted={handleFileDeleted}
-          />
-        </div>
-        <div className="flex-1 min-w-0">
-          <CodeViewer path={activePath} content={fileContent} loading={fileLoading} />
-        </div>
-        <div className="w-[360px] border-l border-line min-h-0 shrink-0">
-          <ChatPanel
-            messages={messages}
-            onSend={handleSend}
-            busy={busy}
-            facts={facts}
-            scrollToIndex={scrollToIndex}
-          />
-        </div>
+
+        {/* ─── Terminal panel ───────────────────────────────────────── */}
+        {showTerminal && (
+          <div className="border-t border-white/5 shrink-0 w-full">
+            <TerminalPanel projectId={projectId} onClose={() => setShowTerminal(false)} />
+          </div>
+        )}
+
+        {/* ─── Builder panel ──────────────────────────────────────────── */}
+        {showBuilder && (
+          <div className="h-[480px] border-t border-white/5 shrink-0 w-full">
+            <BuilderPanel
+              projectId={projectId}
+              projectName={projectName} // <-- NEW: pass project name
+              onClose={() => setShowBuilder(false)}
+              onProjectStarted={handleSyncFiles}
+              onRefreshWorkspace={handleSyncFiles}
+              onSelectFile={selectFile}
+            />
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1,0 +1,34 @@
+import json
+from pathlib import Path
+
+PACKAGE_JSON = {
+    "name": "frontend",
+    "private": True,
+    "version": "0.0.0",
+    "type": "module",
+    "scripts": {
+        "dev": "vite",
+        "build": "vite build",
+        "preview": "vite preview"
+    },
+    "dependencies": {
+        "react": "^18.2.0",
+        "react-dom": "^18.2.0",
+        "react-router-dom": "^6.20.0",
+        "axios": "^1.6.0",
+        "react-hook-form": "^7.48.0"
+    },
+    "devDependencies": {
+        "@types/react": "^18.2.43",
+        "@types/react-dom": "^18.2.17",
+        "@vitejs/plugin-react": "^4.2.1",
+        "autoprefixer": "^10.4.16",
+        "postcss": "^8.4.32",
+        "tailwindcss": "^3.3.6",
+        "vite": "^5.0.8"
+    }
+}
+
+def write_package_json(frontend_dir):
+    path = frontend_dir / "package.json"
+    path.write_text(json.dumps(PACKAGE_JSON, indent=2), encoding='utf-8')
