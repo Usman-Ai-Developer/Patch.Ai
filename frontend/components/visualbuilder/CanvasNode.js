@@ -240,8 +240,11 @@ function WidgetHandle({ node, selected, onPropsChange, zoom, children }) {
         {selected && !isLocked && !isHidden && (
           <div
             data-resize-handle
-            onMouseDown={startResize}
-            className="absolute -bottom-1 -right-1 w-3 h-3 rounded-sm bg-secondary opacity-0 group-hover:opacity-100 hover:opacity-100 cursor-nwse-resize z-20"
+            onMouseDown={(e) => {
+              e.stopPropagation();
+              startResize(e);
+            }}
+            className="absolute -bottom-1 -right-1 w-3 h-3 rounded-sm bg-secondary opacity-100 cursor-nwse-resize z-20"
             title="Drag to resize"
           />
         )}

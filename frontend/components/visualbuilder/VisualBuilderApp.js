@@ -305,16 +305,16 @@ export default function VisualBuilderApp({ projectId }) {
     const targetIsContainer = WIDGETS[target.type]?.isContainer;
     const targetFreePositions = WIDGETS[target.type]?.freePositioning;
 
-    if (targetIsContainer) {
-      return { kind: "into", parentId: target.id, index: -1 };
-    }
-    if (targetFreePositions) {
+    if (targetIsContainer || targetFreePositions) {
       const el = document.querySelector(`[data-node-id="${overId}"]`);
       if (el && cx != null && cy != null) {
+        // Nest inside a container: position the child relative to the
+        // container so it becomes a parent->child shape.
         const rect = el.getBoundingClientRect();
         return {
-          kind: "free",
+          kind: "into",
           parentId: target.id,
+          index: -1,
           x: Math.round(cx - rect.left),
           y: Math.round(cy - rect.top),
         };
@@ -355,14 +355,12 @@ export default function VisualBuilderApp({ projectId }) {
         const root = prev || makeEmptyRoot();
         if (overId && overId !== "root") {
           const target = findNode(root, overId);
-          if (target && targetIsContainer) {
-            node.props = { ...node.props, x: 0, y: 0 };
-            return insertNode(root, overId, node, -1);
-          }
-          if (target && targetFreePositions) {
+          if (target && (targetIsContainer || targetFreePositions)) {
             const el = document.querySelector(`[data-node-id="${overId}"]`);
             if (el && cx != null && cy != null) {
               const rect = el.getBoundingClientRect();
+              // Drop inside a container: position the child relative to the
+              // container so it becomes a parent->child shape.
               node.props = {
                 ...node.props,
                 x: Math.round(cx - rect.left),
@@ -407,6 +405,9 @@ export default function VisualBuilderApp({ projectId }) {
         let next = prev;
         if (resolution.kind === "into") {
           next = moveNode(next, draggedId, resolution.parentId, resolution.index);
+          if (resolution.x != null && resolution.y != null) {
+            next = updateNodeProps(next, draggedId, { x: resolution.x, y: resolution.y });
+          }
         } else if (resolution.kind === "after") {
           next = moveNodeAfter(next, draggedId, resolution.afterId);
         } else if (resolution.kind === "free") {
